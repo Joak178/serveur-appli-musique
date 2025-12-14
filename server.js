@@ -4,7 +4,7 @@ const ytSearch = require('yt-search');
 const YTDlpWrap = require('yt-dlp-wrap').default;
 const fs = require('fs');
 const path = require('path');
-const { spawn, execSync } = require('child_process');
+const { spawn, execFile } = require('child_process');
 
 const app = express();
 app.use(cors());
@@ -20,52 +20,35 @@ const cookiesPath = path.join(binaryDir, 'cookies.txt');
 
 console.log(`🔧 Configuration: Stockage du moteur dans ${ytDlpBinaryPath}`);
 
-// --- GESTION DES COOKIES (Anti-Blocage) ---
+// --- GESTION DES COOKIES ---
 function setupCookies() {
     const cookiesContent = process.env.YOUTUBE_COOKIES;
     if (cookiesContent) {
         try {
-            // On écrit les cookies dans un fichier temporaire
             fs.writeFileSync(cookiesPath, cookiesContent);
-            console.log("🍪 Cookies YouTube chargés avec succès !");
+            console.log("🍪 Cookies YouTube chargés !");
         } catch (e) {
             console.error("⚠️ Erreur écriture cookies:", e.message);
         }
-    } else {
-        console.log("ℹ️ Aucun cookie trouvé (Variable YOUTUBE_COOKIES vide).");
     }
 }
 
-// --- INSTALLATION DU MOTEUR ---
+// --- INSTALLATION MOTEUR ---
 async function ensureYtDlp() {
-    setupCookies(); // On prépare les cookies dès le démarrage
-
+    setupCookies();
     if (fs.existsSync(ytDlpBinaryPath) && fs.statSync(ytDlpBinaryPath).size > 0) {
-        console.log("✅ Moteur yt-dlp déjà présent.");
+        console.log("✅ Moteur yt-dlp présent.");
         return;
     }
-
     console.log(`⬇️  Téléchargement du moteur...`);
     try {
         await YTDlpWrap.downloadFromGithub(ytDlpBinaryPath);
-        console.log("✅ Téléchargement réussi (lib).");
-    } catch (e) {
-        if (!isWindows) {
-            try {
-                execSync(`curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ${ytDlpBinaryPath}`);
-                console.log("✅ Téléchargement réussi (curl).");
-            } catch (curlErr) {
-                console.error("❌ Échec téléchargement:", curlErr.message);
-            }
-        }
-    }
-
-    if (fs.existsSync(ytDlpBinaryPath)) {
         if (!isWindows) fs.chmodSync(ytDlpBinaryPath, '777');
-        console.log("✅ Moteur prêt !");
+        console.log("✅ Moteur installé !");
+    } catch (e) {
+        console.error("❌ Erreur téléchargement:", e.message);
     }
 }
-
 ensureYtDlp();
 
 function extractVideoId(url) {
@@ -92,6 +75,7 @@ app.get('/search', async (req, res) => {
     }
 });
 
+// --- STREAMING EN DEUX ÉTAPES (SOLUTION SÛRE) ---
 app.get('/stream', async (req, res) => {
     const rawUrl = req.query.url;
     const videoId = extractVideoId(rawUrl);
@@ -103,51 +87,53 @@ app.get('/stream', async (req, res) => {
         return res.status(503).send('Serveur en initialisation');
     }
 
-    console.log(`🎵 Stream demandé: ${videoId}`);
+    console.log(`🎵 [1/2] Récupération du lien direct pour : ${videoId}`);
 
-    try {
-        // CORRECTION: On force le Content-Type à audio/mp4 car on demande du m4a
-        res.header('Content-Type', 'audio/mp4'); 
-        res.header('Access-Control-Allow-Origin', '*');
+    // Arguments pour récupérer juste l'URL (Step 1)
+    const args = [
+        youtubeUrl,
+        '--get-url',       // On veut juste le lien, pas télécharger
+        '-f', 'bestaudio[ext=m4a]/best', // Priorité M4A
+        '--no-playlist',
+        '--no-warnings',
+        '--force-ipv4',
+        '--cache-dir', '/tmp/.cache'
+    ];
 
-        // Arguments optimisés pour la robustesse et la compatibilité navigateur
-        const args = [
-            youtubeUrl,
-            '-f', 'bestaudio[ext=m4a]/best', // Priorité absolue au M4A (AAC)
-            '-o', '-',              // Sortie standard (pipe)
-            '--no-playlist',
-            '--quiet',              // Moins de logs
-            '--no-warnings',
-            '--no-progress',        // IMPORTANT : Pas de barre de progression dans le flux binaire
-            '--no-check-certificate',
-            '--force-ipv4',          // Force IPv4 (plus stable sur Render)
-            '--cache-dir', '/tmp/.cache'
-        ];
+    if (fs.existsSync(cookiesPath)) args.push('--cookies', cookiesPath);
 
-        // SI les cookies existent, on les ajoute à la commande
-        if (fs.existsSync(cookiesPath)) {
-            console.log("🍪 Utilisation des cookies");
-            args.push('--cookies', cookiesPath);
+    // Exécution de yt-dlp pour avoir l'URL
+    execFile(ytDlpBinaryPath, args, (error, stdout, stderr) => {
+        if (error) {
+            console.error(`❌ Erreur yt-dlp [Step 1]: ${stderr || error.message}`);
+            // ICI on peut renvoyer une vraie erreur 500 au navigateur car le header n'est pas encore parti
+            return res.status(500).send('Erreur récupération lien (Cookies/IP)');
         }
 
-        const child = spawn(ytDlpBinaryPath, args);
+        const directUrl = stdout.trim();
+        if (!directUrl) {
+            return res.status(500).send('Lien direct vide');
+        }
 
-        child.stderr.on('data', (data) => {
-            const msg = data.toString();
-            // On log tout ce qui est erreur critique
-            if (msg.includes('ERROR') || msg.includes('403')) {
-                console.error(`⚠️ Erreur yt-dlp: ${msg}`);
-            }
-        });
+        console.log(`✅ [2/2] Lien trouvé, lancement du stream CURL...`);
 
-        child.stdout.pipe(res);
+        // Step 2 : On utilise CURL pour streamer le lien direct vers le navigateur
+        // CURL est natif sur Render (Linux) et gère très bien le streaming réseau
+        res.header('Content-Type', 'audio/mp4');
+        res.header('Access-Control-Allow-Origin', '*');
 
-        res.on('close', () => child.kill());
+        const streamer = spawn(isWindows ? 'curl.exe' : 'curl', [
+            '-L',           // Suivre les redirections
+            '-s',           // Silencieux
+            directUrl       // L'URL googlevideo.com récupérée
+        ]);
 
-    } catch (err) {
-        console.error("❌ Erreur:", err.message);
-        if (!res.headersSent) res.status(500).send('Erreur serveur');
-    }
+        streamer.stdout.pipe(res);
+
+        streamer.stderr.on('data', (data) => console.error(`⚠️ Erreur Curl: ${data}`));
+        
+        res.on('close', () => streamer.kill());
+    });
 });
 
-app.listen(PORT, () => console.log(`🚀 Serveur prêt sur le port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Serveur Two-Step prêt sur le port ${PORT}`));
