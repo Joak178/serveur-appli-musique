@@ -38,6 +38,7 @@ function setupCookies() {
 
 // --- INSTALLATION ROBUSTE ---
 async function ensureYtDlp() {
+    // IMPORTANT : On appelle setupCookies() juste pour charger le fichier si nécessaire, mais on ne l'utilise pas dans le spawn ci-dessous.
     setupCookies();
     
     // Vérification présence moteur
@@ -94,7 +95,7 @@ app.get('/search', async (req, res) => {
     }
 });
 
-// --- STREAMING NATIF (Solution validée) ---
+// --- STREAMING NATIF (Solution TV EMBEDDED) ---
 app.get('/stream', async (req, res) => {
     const rawUrl = req.query.url;
     const videoId = extractVideoId(rawUrl);
@@ -119,26 +120,23 @@ app.get('/stream', async (req, res) => {
             '-f', 'bestaudio[ext=m4a]/best', // Priorité M4A
             '-o', '-',              // Sortie Standard (Stdout)
             '--no-playlist',
-            '--quiet',
+            '--quiet',              // Moins de logs
             '--no-warnings',
             '--no-check-certificate',
             '--force-ipv4',         // Indispensable sur Render
-            '--cache-dir', '/tmp/.cache' // Indispensable sur Render (écriture cache)
+            '--cache-dir', '/tmp/.cache', // Indispensable sur Render (écriture cache)
+            
+            // --- ASTUCE FINALE : MODE TV EMBEDDED (Le seul qui fonctionne sans auth) ---
+            '--extractor-args', 'youtube:player_client=tv_embedded'
+            // NOTE : Pas de --cookies ou --user-agent pour ne pas générer de conflit d'identité
         ];
 
-        // Ajout des cookies si présents (Recommandé sur Render)
-        if (fs.existsSync(cookiesPath)) {
-            console.log("🍪 Injection des cookies");
-            args.push('--cookies', cookiesPath);
-            // On utilise un User-Agent PC standard pour correspondre aux cookies
-            args.push('--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-        }
-
-        // Lancement natif (spawn) - C'est la méthode qui a fonctionné pour vous
+        // Lancement natif (spawn)
         const child = spawn(ytDlpBinaryPath, args);
 
         child.stderr.on('data', (data) => {
             const msg = data.toString();
+            // Si le blocage persiste même en mode TV, c'est que YouTube est très agressif
             if (msg.includes('ERROR') || msg.includes('Sign in') || msg.includes('403')) {
                 console.error(`⚠️ Erreur yt-dlp: ${msg}`);
             }
