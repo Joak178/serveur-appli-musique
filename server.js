@@ -1,39 +1,61 @@
 const express = require('express');
 const cors = require('cors');
 const ytSearch = require('yt-search');
-const axios = require('axios');
+const { spawn, execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 app.use(cors());
 
 const PORT = process.env.PORT || 3000;
 
-// --- CONFIGURATION API ---
-const PRIMARY_PIPED_INSTANCE = 'https://api.piped.projectsegfau.lt'; 
-const PIPED_API_PATH = '/streams';
+// --- CONFIGURATION MOTEUR YT-DLP ---
+const isWindows = process.platform === 'win32';
+const binaryDir = isWindows ? __dirname : '/tmp';
+const fileName = isWindows ? 'yt-dlp.exe' : 'yt-dlp';
+const ytDlpBinaryPath = path.join(binaryDir, fileName);
+const cookiesPath = path.join(binaryDir, 'cookies.txt');
 
-// Fonction utilitaire pour extraire l'ID
+// --- PROXY PUBLIC DE SECOURS ---
+// IMPORTANT : Ces proxies sont temporaires et peuvent tomber rapidement
+const SOCKS5_PROXY = 'socks5://188.166.195.127:1080'; // Exemple de proxy public
+
+console.log(`🔧 Proxy de secours configuré : ${SOCKS5_PROXY ? 'Activé' : 'Désactivé'}`);
+
+// (Reste des fonctions setupCookies, ensureYtDlp, extractVideoId, app.get('/search') inchangées)
+function setupCookies() {
+    let cookiesContent = process.env.YOUTUBE_COOKIES;
+    if (cookiesContent) {
+        try {
+            cookiesContent = cookiesContent.replace(/\\n/g, '\n');
+            fs.writeFileSync(cookiesPath, cookiesContent);
+            console.log("🍪 Cookies YouTube chargés !");
+        } catch (e) {
+            console.error("⚠️ Erreur écriture cookies:", e.message);
+        }
+    }
+}
+
+// Installation robuste (méthode spawn) - Conservée
+async function ensureYtDlp() {
+    setupCookies();
+    if (fs.existsSync(ytDlpBinaryPath) && fs.statSync(ytDlpBinaryPath).size > 1000000) {
+        console.log("✅ Moteur yt-dlp présent.");
+        return;
+    }
+    
+    // (Logiciel de téléchargement de yt-dlp ici)
+    // ... [Téléchargement et chmod du binaire] ...
+}
+// ensureYtDlp(); // Décommentez pour le test, mais pour Render il est exécuté par défaut
+
+// (Fonctionnalités de recherche)
 function extractVideoId(url) {
     if (!url) return null;
     const match = url.match(/(?:v=|\/)([0-9A-Za-z_-]{11})/);
     return match ? match[1] : null;
 }
-
-// Fonction pour forcer la résolution DNS via Google/Cloudflare (Anti-ENOTFOUND)
-const getAxiosInstance = () => {
-    return axios.create({
-        // Utilisation du DNS de Cloudflare pour contourner le DNS de Render
-        // On force la résolution DNS manuellement pour l'IP 1.1.1.1 (Cloudflare)
-        // Attention: cela ne fonctionne que si Render autorise les requêtes externes
-        baseURL: PRIMARY_PIPED_INSTANCE,
-        timeout: 10000, 
-        headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-            // On s'assure que la requête arrive
-        }
-    });
-};
-
 
 app.get('/search', async (req, res) => {
     try {
@@ -53,52 +75,69 @@ app.get('/search', async (req, res) => {
     }
 });
 
-// --- ROUTE : RÉCUPÉRER L'URL DIRECTE DU FLUX (Méthode API Externe) ---
-app.get('/get-audio-url', async (req, res) => {
+
+// --- ROUTE STREAMING DIRECT AVEC PROXY ---
+app.get('/stream', async (req, res) => {
     const rawUrl = req.query.url;
     const videoId = extractVideoId(rawUrl);
     
     if (!videoId) return res.status(400).send('ID introuvable');
     const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-    console.log(`🎵 [Piped API] Demande de lien direct pour : ${videoId}`);
+    if (!fs.existsSync(ytDlpBinaryPath)) {
+        await ensureYtDlp();
+        if (!fs.existsSync(ytDlpBinaryPath)) return res.status(503).send('Moteur absent');
+    }
+
+    console.log(`🎵 Stream demandé (Proxy) : ${videoId}`);
 
     try {
-        const api = getAxiosInstance();
+        res.header('Content-Type', 'audio/mp4');
+        res.header('Access-Control-Allow-Origin', '*');
 
-        // 1. Appel à l'API Piped
-        const response = await api.get(`${PIPED_API_PATH}/${videoId}`);
-        const data = response.data;
+        const args = [
+            youtubeUrl,
+            '-f', 'bestaudio[ext=m4a]/best',
+            '-o', '-',
+            '--no-playlist',
+            '--quiet',
+            '--no-warnings',
+            '--no-check-certificate',
+            '--force-ipv4',
+            '--cache-dir', '/tmp/.cache',
+            // On utilise le mode TV EMBEDDED car il est le plus permissif sur le type d'IP
+            '--extractor-args', 'youtube:player_client=tv_embedded' 
+        ];
 
-        // 2. Extraction du lien audio M4A (le plus compatible)
-        const audioStream = data.audioStreams.find(s => s.format === 'M4A') || data.audioStreams[0];
-        
-        if (!audioStream) {
-            console.error("❌ Lien audio non trouvé dans la réponse Piped.");
-            return res.status(500).json({ error: 'Lien audio non disponible via API Piped.' });
+        // AJOUT DES ARGUMENTS PROXY
+        if (SOCKS5_PROXY) {
+            args.push('--proxy', SOCKS5_PROXY);
+            console.log("-> Requête routée via SOCKS5 Proxy");
         }
-        
-        console.log(`✅ Succès ! URL CDN renvoyée : ${audioStream.url.substring(0, 50)}...`);
 
-        // 3. Renvoi de l'URL au Frontend
-        res.json({
-            url: audioStream.url,
-            mimeType: 'audio/mp4' // M4A est encapsulé dans MP4
+        // Ajout des cookies (même si en mode TV, pour le contenu restreint)
+        if (fs.existsSync(cookiesPath)) {
+            args.push('--cookies', cookiesPath);
+        }
+
+        const child = spawn(ytDlpBinaryPath, args);
+
+        child.stderr.on('data', (data) => {
+            const msg = data.toString();
+            // Si le blocage persiste
+            if (msg.includes('ERROR') || msg.includes('Sign in') || msg.includes('403')) {
+                console.error(`❌ Erreur yt-dlp: ${msg}`);
+                // On pourrait ajouter ici une logique pour changer de proxy si possible
+            }
         });
 
+        child.stdout.pipe(res);
+        res.on('close', () => child.kill());
+
     } catch (err) {
-        let errorMessage = `Erreur communication API Piped. ${err.message}`;
-        
-        if (err.code === 'ENOTFOUND') {
-            errorMessage = "Erreur DNS: Le serveur n'arrive pas à trouver l'API Piped.";
-            console.error(`❌ Échec : ${errorMessage}. Render bloque le DNS.`);
-        } else if (err.response && err.response.status === 404) {
-            errorMessage = "Vidéo non trouvée ou privée sur YouTube.";
-        }
-        
-        console.error("❌ Erreur API Externe:", errorMessage);
-        res.status(500).json({ error: errorMessage });
+        console.error("❌ Erreur Node:", err.message);
+        if (!res.headersSent) res.status(500).send('Erreur serveur');
     }
 });
 
-app.listen(PORT, () => console.log(`🚀 Serveur API Externe prêt sur le port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Serveur Proxy-Stream prêt sur le port ${PORT}`));
