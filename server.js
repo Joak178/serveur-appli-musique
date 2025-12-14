@@ -1,76 +1,18 @@
 const express = require('express');
 const cors = require('cors');
 const ytSearch = require('yt-search');
-const YTDlpWrap = require('yt-dlp-wrap').default;
-const fs = require('fs');
-const path = require('path');
-const { spawn, execSync } = require('child_process');
+const axios = require('axios'); // Uniquement axios pour les requêtes API
 
 const app = express();
 app.use(cors());
 
 const PORT = process.env.PORT || 3000;
 
-// --- CONFIGURATION CHEMINS (Compatible Render & Local) ---
-const isWindows = process.platform === 'win32';
-// Sur Render, on DOIT utiliser /tmp. En local, on reste dans le dossier du projet.
-const binaryDir = isWindows ? __dirname : '/tmp';
-const fileName = isWindows ? 'yt-dlp.exe' : 'yt-dlp';
-const ytDlpBinaryPath = path.join(binaryDir, fileName);
-const cookiesPath = path.join(binaryDir, 'cookies.txt');
+// --- API EXTERNE DE RÉCUPÉRATION D'URL ---
+// Cette URL est un service tiers fiable qui gère le décryptage des liens YouTube
+const YOUTUBE_EXTRACTOR_API = 'https://ytapi.microlink.io/'; 
 
-console.log(`🔧 Configuration: Stockage du moteur dans ${ytDlpBinaryPath}`);
-
-// --- GESTION DES COOKIES ---
-function setupCookies() {
-    let cookiesContent = process.env.YOUTUBE_COOKIES;
-    if (cookiesContent) {
-        try {
-            // Nettoyage des sauts de ligne
-            cookiesContent = cookiesContent.replace(/\\n/g, '\n');
-            fs.writeFileSync(cookiesPath, cookiesContent);
-            console.log("🍪 Cookies YouTube chargés !");
-        } catch (e) {
-            console.error("⚠️ Erreur écriture cookies:", e.message);
-        }
-    }
-}
-
-// --- INSTALLATION ROBUSTE ---
-async function ensureYtDlp() {
-    // IMPORTANT : On appelle setupCookies() juste pour charger le fichier si nécessaire, mais on ne l'utilise pas dans le spawn ci-dessous.
-    setupCookies();
-    
-    // Vérification présence moteur
-    if (fs.existsSync(ytDlpBinaryPath) && fs.statSync(ytDlpBinaryPath).size > 1000000) {
-        console.log("✅ Moteur yt-dlp présent.");
-        return;
-    }
-    
-    console.log(`⬇️  Téléchargement du moteur vers ${binaryDir}...`);
-    try {
-        await YTDlpWrap.downloadFromGithub(ytDlpBinaryPath);
-        console.log("✅ Moteur installé via librairie !");
-    } catch (e) {
-        // Fallback CURL pour Linux/Render si la librairie échoue
-        if (!isWindows) {
-            try {
-                execSync(`curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ${ytDlpBinaryPath}`);
-                console.log("✅ Téléchargement réussi via CURL !");
-            } catch (curlErr) {
-                console.error("❌ Échec total du téléchargement:", curlErr.message);
-            }
-        }
-    }
-
-    // IMPORTANT : Permissions d'exécution pour Linux/Render
-    if (fs.existsSync(ytDlpBinaryPath)) {
-        if (!isWindows) fs.chmodSync(ytDlpBinaryPath, '777');
-        console.log("✅ Moteur prêt et exécutable !");
-    }
-}
-ensureYtDlp();
-
+// --- FONCTIONS UTILITAIRES ---
 function extractVideoId(url) {
     if (!url) return null;
     const match = url.match(/(?:v=|\/)([0-9A-Za-z_-]{11})/);
@@ -95,62 +37,50 @@ app.get('/search', async (req, res) => {
     }
 });
 
-// --- STREAMING NATIF (Solution TV EMBEDDED) ---
-app.get('/stream', async (req, res) => {
+// --- NOUVELLE ROUTE : RÉCUPÉRER L'URL DIRECTE DU FLUX (Pas de streaming via Render) ---
+app.get('/get-audio-url', async (req, res) => {
     const rawUrl = req.query.url;
     const videoId = extractVideoId(rawUrl);
     
     if (!videoId) return res.status(400).send('ID introuvable');
     const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-    // Vérification moteur avant spawn
-    if (!fs.existsSync(ytDlpBinaryPath)) {
-        await ensureYtDlp();
-        if (!fs.existsSync(ytDlpBinaryPath)) return res.status(503).send('Moteur absent');
-    }
-
-    console.log(`🎵 Stream demandé : ${videoId}`);
+    console.log(`🎵 [API Externe] Demande de lien direct pour : ${videoId}`);
 
     try {
-        res.header('Content-Type', 'audio/mp4');
-        res.header('Access-Control-Allow-Origin', '*');
-
-        const args = [
-            youtubeUrl,
-            '-f', 'bestaudio[ext=m4a]/best', // Priorité M4A
-            '-o', '-',              // Sortie Standard (Stdout)
-            '--no-playlist',
-            '--quiet',              // Moins de logs
-            '--no-warnings',
-            '--no-check-certificate',
-            '--force-ipv4',         // Indispensable sur Render
-            '--cache-dir', '/tmp/.cache', // Indispensable sur Render (écriture cache)
-            
-            // --- ASTUCE FINALE : MODE TV EMBEDDED (Le seul qui fonctionne sans auth) ---
-            '--extractor-args', 'youtube:player_client=tv_embedded'
-            // NOTE : Pas de --cookies ou --user-agent pour ne pas générer de conflit d'identité
-        ];
-
-        // Lancement natif (spawn)
-        const child = spawn(ytDlpBinaryPath, args);
-
-        child.stderr.on('data', (data) => {
-            const msg = data.toString();
-            // Si le blocage persiste même en mode TV, c'est que YouTube est très agressif
-            if (msg.includes('ERROR') || msg.includes('Sign in') || msg.includes('403')) {
-                console.error(`⚠️ Erreur yt-dlp: ${msg}`);
-            }
+        // 1. Appel à l'API externe pour obtenir le lien direct
+        const response = await axios.get(YOUTUBE_EXTRACTOR_API, {
+            params: {
+                url: youtubeUrl,
+                embed: 'media',
+                filter: 'audio' // On demande spécifiquement l'audio
+            },
+            // Simulation de navigateur pour éviter les blocages de l'API externe
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36' }
         });
 
-        // Le "Pipe" natif qui évite l'erreur "stream.pipe is not a function"
-        child.stdout.pipe(res);
+        const data = response.data;
+        
+        // 2. Extraction du lien audio
+        let audioLink = data.metadata?.audio?.url;
+        
+        if (!audioLink) {
+            console.error("❌ Lien audio non trouvé dans la réponse API.");
+            return res.status(500).json({ error: 'Lien audio non disponible via API.' });
+        }
+        
+        console.log(`✅ Succès ! URL CDN renvoyée : ${audioLink.substring(0, 50)}...`);
 
-        res.on('close', () => child.kill());
+        // 3. Renvoi de l'URL au Frontend
+        res.json({
+            url: audioLink,
+            mimeType: 'audio/mp4' // On suppose que le format est compatible
+        });
 
     } catch (err) {
-        console.error("❌ Erreur Node:", err.message);
-        if (!res.headersSent) res.status(500).send('Erreur serveur');
+        console.error("❌ Erreur API Externe:", err.message);
+        res.status(500).json({ error: 'Erreur communication API externe. Le service est peut-être saturé.' });
     }
 });
 
-app.listen(PORT, () => console.log(`🚀 Serveur Natif prêt sur le port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Serveur API Externe prêt sur le port ${PORT}`));
