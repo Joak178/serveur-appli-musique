@@ -4,7 +4,7 @@ const ytSearch = require('yt-search');
 const YTDlpWrap = require('yt-dlp-wrap').default;
 const fs = require('fs');
 const path = require('path');
-const { spawn, execFile } = require('child_process');
+const { spawn, execFile, execSync } = require('child_process');
 
 const app = express();
 app.use(cors());
@@ -33,20 +33,50 @@ function setupCookies() {
     }
 }
 
-// --- INSTALLATION MOTEUR ---
+// --- INSTALLATION ROBUSTE (AVEC SECOURS CURL) ---
 async function ensureYtDlp() {
     setupCookies();
+    
+    // Vérification : Fichier existe ET n'est pas vide (taille > 0)
     if (fs.existsSync(ytDlpBinaryPath) && fs.statSync(ytDlpBinaryPath).size > 0) {
         console.log("✅ Moteur yt-dlp présent.");
         return;
     }
+    
     console.log(`⬇️  Téléchargement du moteur...`);
+    
+    // TENTATIVE 1 : Librairie Standard
     try {
         await YTDlpWrap.downloadFromGithub(ytDlpBinaryPath);
-        if (!isWindows) fs.chmodSync(ytDlpBinaryPath, '777');
-        console.log("✅ Moteur installé !");
+        console.log("✅ Moteur installé via librairie !");
     } catch (e) {
-        console.error("❌ Erreur téléchargement:", e.message);
+        console.error("⚠️ Échec librairie, passage au plan B...");
+        
+        // TENTATIVE 2 : CURL (Mode Brute Force pour Linux/Render)
+        if (!isWindows) {
+            try {
+                console.log("🔄 Lancement de CURL...");
+                // On télécharge le dernier binaire officiel directement
+                execSync(`curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ${ytDlpBinaryPath}`);
+                console.log("✅ Téléchargement réussi via CURL !");
+            } catch (curlErr) {
+                console.error("❌ Échec total du téléchargement (CURL):", curlErr.message);
+            }
+        }
+    }
+
+    // VÉRIFICATION FINALE ET PERMISSIONS
+    if (fs.existsSync(ytDlpBinaryPath) && fs.statSync(ytDlpBinaryPath).size > 0) {
+        if (!isWindows) {
+            try {
+                fs.chmodSync(ytDlpBinaryPath, '777'); // Rend le fichier exécutable
+            } catch (permErr) {
+                console.error("⚠️ Erreur permissions:", permErr.message);
+            }
+        }
+        console.log("✅ Moteur prêt et exécutable !");
+    } else {
+        console.error("❌ ERREUR CRITIQUE : Le moteur n'a pas pu être téléchargé.");
     }
 }
 ensureYtDlp();
@@ -83,17 +113,21 @@ app.get('/stream', async (req, res) => {
     if (!videoId) return res.status(400).send('ID introuvable');
     const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
+    // Vérification ultime avant de lancer
     if (!fs.existsSync(ytDlpBinaryPath)) {
-        return res.status(503).send('Serveur en initialisation');
+        // Tentative de rattrapage de dernière minute
+        await ensureYtDlp();
+        if (!fs.existsSync(ytDlpBinaryPath)) {
+            return res.status(503).send('Serveur en erreur: Moteur absent');
+        }
     }
 
     console.log(`🎵 [1/2] Récupération du lien direct pour : ${videoId}`);
 
-    // Arguments pour récupérer juste l'URL (Step 1)
     const args = [
         youtubeUrl,
-        '--get-url',       // On veut juste le lien, pas télécharger
-        '-f', 'bestaudio[ext=m4a]/best', // Priorité M4A
+        '--get-url',
+        '-f', 'bestaudio[ext=m4a]/best',
         '--no-playlist',
         '--no-warnings',
         '--force-ipv4',
@@ -102,11 +136,9 @@ app.get('/stream', async (req, res) => {
 
     if (fs.existsSync(cookiesPath)) args.push('--cookies', cookiesPath);
 
-    // Exécution de yt-dlp pour avoir l'URL
     execFile(ytDlpBinaryPath, args, (error, stdout, stderr) => {
         if (error) {
             console.error(`❌ Erreur yt-dlp [Step 1]: ${stderr || error.message}`);
-            // ICI on peut renvoyer une vraie erreur 500 au navigateur car le header n'est pas encore parti
             return res.status(500).send('Erreur récupération lien (Cookies/IP)');
         }
 
@@ -117,23 +149,19 @@ app.get('/stream', async (req, res) => {
 
         console.log(`✅ [2/2] Lien trouvé, lancement du stream CURL...`);
 
-        // Step 2 : On utilise CURL pour streamer le lien direct vers le navigateur
-        // CURL est natif sur Render (Linux) et gère très bien le streaming réseau
         res.header('Content-Type', 'audio/mp4');
         res.header('Access-Control-Allow-Origin', '*');
 
         const streamer = spawn(isWindows ? 'curl.exe' : 'curl', [
-            '-L',           // Suivre les redirections
-            '-s',           // Silencieux
-            directUrl       // L'URL googlevideo.com récupérée
+            '-L',
+            '-s',
+            directUrl
         ]);
 
         streamer.stdout.pipe(res);
-
         streamer.stderr.on('data', (data) => console.error(`⚠️ Erreur Curl: ${data}`));
-        
         res.on('close', () => streamer.kill());
     });
 });
 
-app.listen(PORT, () => console.log(`🚀 Serveur Two-Step prêt sur le port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Serveur Robust-Curl prêt sur le port ${PORT}`));
