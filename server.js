@@ -106,21 +106,20 @@ app.get('/stream', async (req, res) => {
     console.log(`🎵 Stream demandé: ${videoId}`);
 
     try {
-        // On ne force plus le 'audio/mp4' strict pour éviter les confusions si on reçoit du webm
-        // 'audio/mpeg' ou 'video/mp4' passent généralement bien partout
+        // CORRECTION: On force le Content-Type à audio/mp4 car on demande du m4a
         res.header('Content-Type', 'audio/mp4'); 
         res.header('Access-Control-Allow-Origin', '*');
 
-        // Arguments optimisés pour la robustesse
+        // Arguments optimisés pour la robustesse et la compatibilité navigateur
         const args = [
             youtubeUrl,
-            '-f', 'ba/b',           // "Best Audio" OU "Best" (si audio seul impossible, prend la vidéo)
+            '-f', 'bestaudio[ext=m4a]/best', // Priorité absolue au M4A (AAC)
             '-o', '-',              // Sortie standard (pipe)
             '--no-playlist',
             '--quiet',              // Moins de logs
             '--no-warnings',
+            '--no-progress',        // IMPORTANT : Pas de barre de progression dans le flux binaire
             '--no-check-certificate',
-            '--prefer-free-formats', // Préfère WebM/Opus (souvent moins bloqué)
             '--force-ipv4',          // Force IPv4 (plus stable sur Render)
             '--cache-dir', '/tmp/.cache'
         ];
