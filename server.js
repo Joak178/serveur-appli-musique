@@ -106,27 +106,28 @@ app.get('/stream', async (req, res) => {
     console.log(`🎵 Stream demandé: ${videoId}`);
 
     try {
-        res.header('Content-Type', 'audio/mp4');
+        // On ne force plus le 'audio/mp4' strict pour éviter les confusions si on reçoit du webm
+        // 'audio/mpeg' ou 'video/mp4' passent généralement bien partout
+        res.header('Content-Type', 'audio/mp4'); 
         res.header('Access-Control-Allow-Origin', '*');
 
-        // Arguments de base
+        // Arguments optimisés pour la robustesse
         const args = [
             youtubeUrl,
-            '-f', 'bestaudio[ext=m4a]/bestaudio',
-            '-o', '-',
+            '-f', 'ba/b',           // "Best Audio" OU "Best" (si audio seul impossible, prend la vidéo)
+            '-o', '-',              // Sortie standard (pipe)
             '--no-playlist',
-            '--quiet',
+            '--quiet',              // Moins de logs
             '--no-warnings',
             '--no-check-certificate',
-            '--cache-dir', '/tmp/.cache',
-            // On ajoute des headers pour ressembler à un vrai navigateur
-            '--add-header', 'Referer:https://www.youtube.com/',
-            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            '--prefer-free-formats', // Préfère WebM/Opus (souvent moins bloqué)
+            '--force-ipv4',          // Force IPv4 (plus stable sur Render)
+            '--cache-dir', '/tmp/.cache'
         ];
 
         // SI les cookies existent, on les ajoute à la commande
         if (fs.existsSync(cookiesPath)) {
-            console.log("🍪 Utilisation des cookies pour l'authentification");
+            console.log("🍪 Utilisation des cookies");
             args.push('--cookies', cookiesPath);
         }
 
@@ -134,7 +135,8 @@ app.get('/stream', async (req, res) => {
 
         child.stderr.on('data', (data) => {
             const msg = data.toString();
-            if (msg.includes('ERROR') || msg.includes('403') || msg.includes('Sign in')) {
+            // On log tout ce qui est erreur critique
+            if (msg.includes('ERROR') || msg.includes('403')) {
                 console.error(`⚠️ Erreur yt-dlp: ${msg}`);
             }
         });
