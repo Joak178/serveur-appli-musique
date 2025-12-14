@@ -11,8 +11,9 @@ app.use(cors());
 
 const PORT = process.env.PORT || 3000;
 
-// --- CONFIGURATION CHEMINS ---
+// --- CONFIGURATION CHEMINS (Compatible Render & Local) ---
 const isWindows = process.platform === 'win32';
+// Sur Render, on DOIT utiliser /tmp. En local, on reste dans le dossier du projet.
 const binaryDir = isWindows ? __dirname : '/tmp';
 const fileName = isWindows ? 'yt-dlp.exe' : 'yt-dlp';
 const ytDlpBinaryPath = path.join(binaryDir, fileName);
@@ -20,21 +21,18 @@ const cookiesPath = path.join(binaryDir, 'cookies.txt');
 
 console.log(`🔧 Configuration: Stockage du moteur dans ${ytDlpBinaryPath}`);
 
-// --- GESTION DES COOKIES (Nettoyage + Debug) ---
+// --- GESTION DES COOKIES ---
 function setupCookies() {
     let cookiesContent = process.env.YOUTUBE_COOKIES;
     if (cookiesContent) {
         try {
-            // Nettoyage : On remplace les sauts de ligne littéraux "\n" qui arrivent parfois lors du copier-coller
+            // Nettoyage des sauts de ligne
             cookiesContent = cookiesContent.replace(/\\n/g, '\n');
             fs.writeFileSync(cookiesPath, cookiesContent);
-            console.log(`🍪 Cookies chargés ! (Taille: ${cookiesContent.length} caractères)`);
-            console.log(`   Aperçu: ${cookiesContent.substring(0, 50)}...`);
+            console.log("🍪 Cookies YouTube chargés !");
         } catch (e) {
             console.error("⚠️ Erreur écriture cookies:", e.message);
         }
-    } else {
-        console.log("ℹ️ Pas de variable YOUTUBE_COOKIES détectée.");
     }
 }
 
@@ -42,17 +40,18 @@ function setupCookies() {
 async function ensureYtDlp() {
     setupCookies();
     
-    // On force la mise à jour si le fichier est trop petit (corrompu)
+    // Vérification présence moteur
     if (fs.existsSync(ytDlpBinaryPath) && fs.statSync(ytDlpBinaryPath).size > 1000000) {
         console.log("✅ Moteur yt-dlp présent.");
         return;
     }
     
-    console.log(`⬇️  Téléchargement du moteur...`);
+    console.log(`⬇️  Téléchargement du moteur vers ${binaryDir}...`);
     try {
         await YTDlpWrap.downloadFromGithub(ytDlpBinaryPath);
         console.log("✅ Moteur installé via librairie !");
     } catch (e) {
+        // Fallback CURL pour Linux/Render si la librairie échoue
         if (!isWindows) {
             try {
                 execSync(`curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ${ytDlpBinaryPath}`);
@@ -63,9 +62,10 @@ async function ensureYtDlp() {
         }
     }
 
+    // IMPORTANT : Permissions d'exécution pour Linux/Render
     if (fs.existsSync(ytDlpBinaryPath)) {
         if (!isWindows) fs.chmodSync(ytDlpBinaryPath, '777');
-        console.log("✅ Moteur prêt !");
+        console.log("✅ Moteur prêt et exécutable !");
     }
 }
 ensureYtDlp();
@@ -94,7 +94,7 @@ app.get('/search', async (req, res) => {
     }
 });
 
-// --- STREAMING (MODE TV EMBEDDED) ---
+// --- STREAMING NATIF (Solution validée) ---
 app.get('/stream', async (req, res) => {
     const rawUrl = req.query.url;
     const videoId = extractVideoId(rawUrl);
@@ -102,6 +102,7 @@ app.get('/stream', async (req, res) => {
     if (!videoId) return res.status(400).send('ID introuvable');
     const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
+    // Vérification moteur avant spawn
     if (!fs.existsSync(ytDlpBinaryPath)) {
         await ensureYtDlp();
         if (!fs.existsSync(ytDlpBinaryPath)) return res.status(503).send('Moteur absent');
@@ -115,38 +116,35 @@ app.get('/stream', async (req, res) => {
 
         const args = [
             youtubeUrl,
-            '-f', 'bestaudio',      // On laisse yt-dlp choisir le meilleur format audio dispo
-            '-o', '-',              // Sortie Standard
+            '-f', 'bestaudio[ext=m4a]/best', // Priorité M4A
+            '-o', '-',              // Sortie Standard (Stdout)
             '--no-playlist',
             '--quiet',
             '--no-warnings',
             '--no-check-certificate',
-            '--force-ipv4',
-            '--cache-dir', '/tmp/.cache',
-            
-            // --- ASTUCE INGÉNIEUSE : MODE TV ---
-            // Le client 'tv_embedded' est beaucoup moins strict sur les IPs Datacenter
-            '--extractor-args', 'youtube:player_client=tv_embedded'
+            '--force-ipv4',         // Indispensable sur Render
+            '--cache-dir', '/tmp/.cache' // Indispensable sur Render (écriture cache)
         ];
 
-        // On n'ajoute les cookies QUE s'ils sont présents
+        // Ajout des cookies si présents (Recommandé sur Render)
         if (fs.existsSync(cookiesPath)) {
             console.log("🍪 Injection des cookies");
             args.push('--cookies', cookiesPath);
-        } else {
-            console.log("ℹ️ Sans cookies (Mode TV)");
+            // On utilise un User-Agent PC standard pour correspondre aux cookies
+            args.push('--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
         }
 
+        // Lancement natif (spawn) - C'est la méthode qui a fonctionné pour vous
         const child = spawn(ytDlpBinaryPath, args);
 
         child.stderr.on('data', (data) => {
             const msg = data.toString();
-            // On surveille les erreurs critiques
             if (msg.includes('ERROR') || msg.includes('Sign in') || msg.includes('403')) {
                 console.error(`⚠️ Erreur yt-dlp: ${msg}`);
             }
         });
 
+        // Le "Pipe" natif qui évite l'erreur "stream.pipe is not a function"
         child.stdout.pipe(res);
 
         res.on('close', () => child.kill());
@@ -157,4 +155,4 @@ app.get('/stream', async (req, res) => {
     }
 });
 
-app.listen(PORT, () => console.log(`🚀 Serveur TV-Mode prêt sur le port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Serveur Natif prêt sur le port ${PORT}`));
