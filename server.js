@@ -20,13 +20,16 @@ const cookiesPath = path.join(binaryDir, 'cookies.txt');
 
 console.log(`🔧 Configuration: Stockage du moteur dans ${ytDlpBinaryPath}`);
 
-// --- GESTION DES COOKIES ---
+// --- GESTION DES COOKIES (Nettoyage + Debug) ---
 function setupCookies() {
-    const cookiesContent = process.env.YOUTUBE_COOKIES;
+    let cookiesContent = process.env.YOUTUBE_COOKIES;
     if (cookiesContent) {
         try {
+            // Nettoyage : On remplace les sauts de ligne littéraux "\n" qui arrivent parfois lors du copier-coller
+            cookiesContent = cookiesContent.replace(/\\n/g, '\n');
             fs.writeFileSync(cookiesPath, cookiesContent);
-            console.log("🍪 Cookies YouTube chargés !");
+            console.log(`🍪 Cookies chargés ! (Taille: ${cookiesContent.length} caractères)`);
+            console.log(`   Aperçu: ${cookiesContent.substring(0, 50)}...`);
         } catch (e) {
             console.error("⚠️ Erreur écriture cookies:", e.message);
         }
@@ -39,7 +42,8 @@ function setupCookies() {
 async function ensureYtDlp() {
     setupCookies();
     
-    if (fs.existsSync(ytDlpBinaryPath) && fs.statSync(ytDlpBinaryPath).size > 0) {
+    // On force la mise à jour si le fichier est trop petit (corrompu)
+    if (fs.existsSync(ytDlpBinaryPath) && fs.statSync(ytDlpBinaryPath).size > 1000000) {
         console.log("✅ Moteur yt-dlp présent.");
         return;
     }
@@ -90,7 +94,7 @@ app.get('/search', async (req, res) => {
     }
 });
 
-// --- STREAMING DIRECT (Retour à la méthode locale) ---
+// --- STREAMING (MODE TV EMBEDDED) ---
 app.get('/stream', async (req, res) => {
     const rawUrl = req.query.url;
     const videoId = extractVideoId(rawUrl);
@@ -98,59 +102,53 @@ app.get('/stream', async (req, res) => {
     if (!videoId) return res.status(400).send('ID introuvable');
     const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-    // Vérification présence moteur
     if (!fs.existsSync(ytDlpBinaryPath)) {
         await ensureYtDlp();
         if (!fs.existsSync(ytDlpBinaryPath)) return res.status(503).send('Moteur absent');
     }
 
-    console.log(`🎵 Stream Direct demandé : ${videoId}`);
+    console.log(`🎵 Stream demandé : ${videoId}`);
 
     try {
         res.header('Content-Type', 'audio/mp4');
         res.header('Access-Control-Allow-Origin', '*');
 
-        // Arguments de la méthode locale, adaptés pour Render
         const args = [
             youtubeUrl,
-            '-f', 'bestaudio[ext=m4a]/best', // Force le M4A pour compatibilité Web
-            '-o', '-',              // Sortie Standard (LE secret du streaming direct)
+            '-f', 'bestaudio',      // On laisse yt-dlp choisir le meilleur format audio dispo
+            '-o', '-',              // Sortie Standard
             '--no-playlist',
-            '--quiet',              // Moins de logs
+            '--quiet',
             '--no-warnings',
             '--no-check-certificate',
-            '--force-ipv4',          // Important pour Render
-            '--cache-dir', '/tmp/.cache', // Vital pour Render
+            '--force-ipv4',
+            '--cache-dir', '/tmp/.cache',
             
-            // Simulation PC (pour matcher avec vos cookies)
-            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-            '--referer', 'https://www.youtube.com/'
+            // --- ASTUCE INGÉNIEUSE : MODE TV ---
+            // Le client 'tv_embedded' est beaucoup moins strict sur les IPs Datacenter
+            '--extractor-args', 'youtube:player_client=tv_embedded'
         ];
 
-        // Ajout des cookies si présents
+        // On n'ajoute les cookies QUE s'ils sont présents
         if (fs.existsSync(cookiesPath)) {
             console.log("🍪 Injection des cookies");
             args.push('--cookies', cookiesPath);
         } else {
-            console.log("ℹ️ Pas de cookies, tentative standard");
+            console.log("ℹ️ Sans cookies (Mode TV)");
         }
 
-        // Lancement direct du moteur (comme en local)
         const child = spawn(ytDlpBinaryPath, args);
 
-        // Gestion des erreurs en temps réel
         child.stderr.on('data', (data) => {
             const msg = data.toString();
-            // On log que les vraies erreurs pour ne pas polluer
+            // On surveille les erreurs critiques
             if (msg.includes('ERROR') || msg.includes('Sign in') || msg.includes('403')) {
                 console.error(`⚠️ Erreur yt-dlp: ${msg}`);
             }
         });
 
-        // Connexion directe du tuyau audio vers le navigateur
         child.stdout.pipe(res);
 
-        // Nettoyage si l'utilisateur quitte la page
         res.on('close', () => child.kill());
 
     } catch (err) {
@@ -159,4 +157,4 @@ app.get('/stream', async (req, res) => {
     }
 });
 
-app.listen(PORT, () => console.log(`🚀 Serveur Direct-Stream prêt sur le port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Serveur TV-Mode prêt sur le port ${PORT}`));
