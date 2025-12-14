@@ -4,36 +4,46 @@ const ytSearch = require('yt-search');
 const YTDlpWrap = require('yt-dlp-wrap').default;
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process'); // On utilise le spawn natif pour un contrôle total
+const os = require('os');
+const { spawn } = require('child_process');
 
 const app = express();
 app.use(cors());
 
-// --- INITIALISATION DU MOTEUR YT-DLP (Correction Windows) ---
-// Sur Windows, il faut absolument l'extension .exe pour que spawn fonctionne bien
-const isWindows = process.platform === 'win32';
-const fileName = isWindows ? 'yt-dlp.exe' : 'yt-dlp';
-const ytDlpBinaryPath = path.join(__dirname, fileName);
+const PORT = process.env.PORT || 3000;
 
-// Fonction pour s'assurer que le moteur est installé
+// --- CONFIGURATION CHEMINS (Spécial Cloud/Render) ---
+const isWindows = process.platform === 'win32';
+// Sur Render (Linux), on doit utiliser /tmp car le reste est souvent en lecture seule
+const binaryDir = isWindows ? __dirname : '/tmp';
+const fileName = isWindows ? 'yt-dlp.exe' : 'yt-dlp';
+const ytDlpBinaryPath = path.join(binaryDir, fileName);
+
+console.log(`🔧 Configuration: Stockage du moteur dans ${ytDlpBinaryPath}`);
+
+// --- INSTALLATION ROBUSTE DU MOTEUR ---
 async function ensureYtDlp() {
-    if (!fs.existsSync(ytDlpBinaryPath)) {
-        console.log(`⬇️  Téléchargement du moteur ${fileName}...`);
-        // Télécharge le bon binaire selon l'OS
-        await YTDlpWrap.downloadFromGithub(ytDlpBinaryPath);
-        
-        // Sur Linux/Mac, il faut rendre le fichier exécutable
-        if (!isWindows) {
-            fs.chmodSync(ytDlpBinaryPath, '755');
+    // On vérifie si le fichier existe ET s'il a une taille > 0
+    if (!fs.existsSync(ytDlpBinaryPath) || fs.statSync(ytDlpBinaryPath).size === 0) {
+        console.log(`⬇️  Téléchargement du moteur ${fileName} vers ${binaryDir}...`);
+        try {
+            await YTDlpWrap.downloadFromGithub(ytDlpBinaryPath);
+            
+            // Sur Linux, il est CRUCIAL de rendre le fichier exécutable
+            if (!isWindows) {
+                fs.chmodSync(ytDlpBinaryPath, '777');
+            }
+            console.log("✅ Moteur yt-dlp installé et prêt !");
+        } catch (e) {
+            console.error("❌ Erreur fatale lors du téléchargement de yt-dlp:", e);
         }
-        console.log("✅ Moteur yt-dlp installé avec succès !");
     } else {
-        console.log(`✅ Moteur détecté : ${ytDlpBinaryPath}`);
+        console.log("✅ Moteur yt-dlp déjà présent.");
     }
 }
 
-// On lance la vérification au démarrage
-ensureYtDlp().catch(err => console.error("❌ Erreur critique install yt-dlp:", err));
+// Lancement immédiat au démarrage du serveur
+ensureYtDlp();
 
 function extractVideoId(url) {
     if (!url) return null;
@@ -41,13 +51,10 @@ function extractVideoId(url) {
     return match ? match[1] : null;
 }
 
-// --- ROUTE RECHERCHE ---
 app.get('/search', async (req, res) => {
     try {
         const query = req.query.q;
         if (!query) return res.status(400).json({ error: 'Recherche vide' });
-
-        console.log(`🔍 Recherche : ${query}`);
         const result = await ytSearch(query);
         const videos = result.videos.slice(0, 10).map(item => ({
             title: item.title,
@@ -58,69 +65,79 @@ app.get('/search', async (req, res) => {
         }));
         res.json(videos);
     } catch (err) {
-        console.error("❌ Erreur Recherche:", err.message);
-        res.status(500).json({ error: 'Erreur recherche serveur' });
+        console.error("Erreur Recherche:", err);
+        res.status(500).json({ error: 'Erreur serveur' });
     }
 });
 
-// --- ROUTE STREAMING (Version Native Node.js) ---
+// --- ROUTE STREAMING BLINDÉE ---
 app.get('/stream', async (req, res) => {
     const rawUrl = req.query.url;
     const videoId = extractVideoId(rawUrl);
     
-    if (!videoId) return res.status(400).send('ID Vidéo introuvable');
+    if (!videoId) return res.status(400).send('ID introuvable');
     const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-    console.log(`🎵 Lecture ID : ${videoId}`);
-
-    // Vérification ultime avant de lancer
+    // Vérification de sécurité avant de lancer le spawn
     if (!fs.existsSync(ytDlpBinaryPath)) {
-        return res.status(500).send('Le moteur yt-dlp est introuvable sur le serveur.');
+        console.error("❌ Moteur yt-dlp introuvable lors de la requête");
+        // On tente de le réinstaller en urgence
+        await ensureYtDlp();
+        // Si toujours pas là, erreur 503
+        if (!fs.existsSync(ytDlpBinaryPath)) {
+            return res.status(503).send('Serveur en cours d\'initialisation, réessayez dans 5 secondes');
+        }
     }
 
+    console.log(`🎵 Stream demandé: ${videoId}`);
+
     try {
-        res.header('Content-Type', 'audio/mpeg');
+        res.header('Content-Type', 'audio/mp4');
         res.header('Access-Control-Allow-Origin', '*');
 
-        // Lancement du processus yt-dlp en natif
-        // C'est beaucoup plus robuste que de passer par le wrapper pour le streaming
+        // On lance yt-dlp
         const child = spawn(ytDlpBinaryPath, [
             youtubeUrl,
-            '-f', 'bestaudio',      // Meilleure qualité audio
-            '-o', '-',              // Sortie standard (stdout) pour le pipe
+            '-f', 'bestaudio[ext=m4a]/bestaudio', // Essaie M4A, sinon le meilleur dispo
+            '-o', '-',              // Sortie standard
             '--no-playlist',
-            '--quiet',              // Silence dans les logs
+            '--quiet',
             '--no-warnings',
-            '--prefer-free-formats' // Evite les DRM si possible
+            '--no-check-certificate', // Aide parfois sur les vieux serveurs
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' // Faux navigateur
         ]);
 
-        // Si yt-dlp a un problème au démarrage
-        child.on('error', (err) => {
-            console.error('❌ Erreur spawn:', err.message);
-            if (!res.headersSent) res.status(500).send('Erreur lancement processus');
-        });
+        let headersSent = false;
 
-        // Si yt-dlp crache une erreur pendant l'exécution (stderr)
-        child.stderr.on('data', (data) => {
-            // On ignore les warnings non critiques
-            const msg = data.toString();
-            if (!msg.includes('WARNING')) {
-                console.error(`⚠️ yt-dlp stderr: ${msg}`);
+        // Gestion d'erreur au lancement (ex: fichier non exécutable)
+        child.on('error', (err) => {
+            console.error('❌ Erreur SPAWN:', err.message);
+            if (!headersSent) {
+                headersSent = true;
+                res.status(500).send('Erreur interne du moteur audio');
             }
         });
 
-        // LE TUYAU MAGIQUE : On connecte la sortie de yt-dlp directement à la réponse HTTP
+        // Logs d'erreur de yt-dlp (ex: 403 Forbidden de YouTube)
+        child.stderr.on('data', (data) => {
+            const msg = data.toString();
+            // On ignore les petits warnings, on ne log que les erreurs bloquantes
+            if (msg.includes('ERROR') || msg.includes('403')) {
+                console.error(`⚠️ Erreur yt-dlp: ${msg}`);
+            }
+        });
+
+        // Connexion du flux
         child.stdout.pipe(res);
 
-        // Nettoyage à la fermeture
         res.on('close', () => {
-            child.kill(); // On tue le processus si l'utilisateur ferme l'onglet
+            child.kill();
         });
 
     } catch (err) {
-        console.error("❌ Erreur Générale:", err.message);
-        if (!res.headersSent) res.status(500).send('Erreur serveur');
+        console.error("❌ Erreur Route:", err.message);
+        if (!res.headersSent) res.status(500).send('Erreur serveur critique');
     }
 });
 
-app.listen(3000, () => console.log('🚀 Serveur "Native yt-dlp" prêt sur http://localhost:3000'));
+app.listen(PORT, () => console.log(`🚀 Serveur v2 (Dossier TMP) prêt sur le port ${PORT}`));
