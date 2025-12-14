@@ -25,58 +25,46 @@ function setupCookies() {
     const cookiesContent = process.env.YOUTUBE_COOKIES;
     if (cookiesContent) {
         try {
+            // Nettoyage éventuel des sauts de ligne si mal copiés
+            // On écrit les cookies dans un fichier texte que yt-dlp va lire
             fs.writeFileSync(cookiesPath, cookiesContent);
-            console.log("🍪 Cookies YouTube chargés !");
+            console.log("🍪 Cookies YouTube chargés depuis l'environnement !");
         } catch (e) {
             console.error("⚠️ Erreur écriture cookies:", e.message);
         }
+    } else {
+        console.log("ℹ️ Pas de variable YOUTUBE_COOKIES détectée.");
     }
 }
 
-// --- INSTALLATION ROBUSTE (AVEC SECOURS CURL) ---
+// --- INSTALLATION ROBUSTE ---
 async function ensureYtDlp() {
-    setupCookies();
+    setupCookies(); // Chargement des cookies au démarrage
     
-    // Vérification : Fichier existe ET n'est pas vide (taille > 0)
     if (fs.existsSync(ytDlpBinaryPath) && fs.statSync(ytDlpBinaryPath).size > 0) {
         console.log("✅ Moteur yt-dlp présent.");
         return;
     }
     
     console.log(`⬇️  Téléchargement du moteur...`);
-    
-    // TENTATIVE 1 : Librairie Standard
     try {
         await YTDlpWrap.downloadFromGithub(ytDlpBinaryPath);
         console.log("✅ Moteur installé via librairie !");
     } catch (e) {
-        console.error("⚠️ Échec librairie, passage au plan B...");
-        
-        // TENTATIVE 2 : CURL (Mode Brute Force pour Linux/Render)
+        console.error("⚠️ Échec librairie, tentative CURL...");
         if (!isWindows) {
             try {
-                console.log("🔄 Lancement de CURL...");
-                // On télécharge le dernier binaire officiel directement
                 execSync(`curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ${ytDlpBinaryPath}`);
                 console.log("✅ Téléchargement réussi via CURL !");
             } catch (curlErr) {
-                console.error("❌ Échec total du téléchargement (CURL):", curlErr.message);
+                console.error("❌ Échec total du téléchargement:", curlErr.message);
             }
         }
     }
 
-    // VÉRIFICATION FINALE ET PERMISSIONS
-    if (fs.existsSync(ytDlpBinaryPath) && fs.statSync(ytDlpBinaryPath).size > 0) {
-        if (!isWindows) {
-            try {
-                fs.chmodSync(ytDlpBinaryPath, '777'); // Rend le fichier exécutable
-            } catch (permErr) {
-                console.error("⚠️ Erreur permissions:", permErr.message);
-            }
-        }
+    if (fs.existsSync(ytDlpBinaryPath)) {
+        if (!isWindows) fs.chmodSync(ytDlpBinaryPath, '777');
         console.log("✅ Moteur prêt et exécutable !");
-    } else {
-        console.error("❌ ERREUR CRITIQUE : Le moteur n'a pas pu être téléchargé.");
     }
 }
 ensureYtDlp();
@@ -105,7 +93,7 @@ app.get('/search', async (req, res) => {
     }
 });
 
-// --- STREAMING EN DEUX ÉTAPES (SOLUTION SÛRE) ---
+// --- STREAMING AVEC COOKIES (Priorité Desktop) ---
 app.get('/stream', async (req, res) => {
     const rawUrl = req.query.url;
     const videoId = extractVideoId(rawUrl);
@@ -113,18 +101,13 @@ app.get('/stream', async (req, res) => {
     if (!videoId) return res.status(400).send('ID introuvable');
     const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-    // Vérification ultime avant de lancer
     if (!fs.existsSync(ytDlpBinaryPath)) {
-        // Tentative de rattrapage de dernière minute
         await ensureYtDlp();
-        if (!fs.existsSync(ytDlpBinaryPath)) {
-            return res.status(503).send('Serveur en erreur: Moteur absent');
-        }
+        if (!fs.existsSync(ytDlpBinaryPath)) return res.status(503).send('Moteur absent');
     }
 
-    console.log(`🎵 [1/2] Récupération du lien direct pour : ${videoId}`);
+    console.log(`🎵 [1/2] Récupération lien pour : ${videoId}`);
 
-    // Configuration avancée pour contourner les blocages BOT
     const args = [
         youtubeUrl,
         '--get-url',
@@ -133,41 +116,45 @@ app.get('/stream', async (req, res) => {
         '--no-warnings',
         '--force-ipv4',
         '--cache-dir', '/tmp/.cache',
-        // Masquage en navigateur standard
+        // IMPORTANT : On utilise un User-Agent de PC classique pour correspondre aux cookies
         '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        '--referer', 'https://www.youtube.com/',
-        // ASTUCE CLEF : On utilise l'API Android qui est moins restrictive sur les IPs serveur
-        '--extractor-args', 'youtube:player_client=android'
+        '--referer', 'https://www.youtube.com/'
     ];
 
-    if (fs.existsSync(cookiesPath)) args.push('--cookies', cookiesPath);
+    // Si les cookies sont là, on les injecte.
+    // Et on NE MET PAS 'player_client=android' pour éviter le conflit d'identité.
+    if (fs.existsSync(cookiesPath)) {
+        console.log("🍪 Authentification par cookies activée");
+        args.push('--cookies', cookiesPath);
+    } else {
+        // Si PAS de cookies, on tente le mode Android en dernier recours
+        console.log("ℹ️ Pas de cookies, tentative mode Android");
+        args.push('--extractor-args', 'youtube:player_client=android');
+    }
 
     execFile(ytDlpBinaryPath, args, (error, stdout, stderr) => {
         if (error) {
-            console.error(`❌ Erreur yt-dlp [Step 1]: ${stderr || error.message}`);
-            return res.status(500).send('Erreur récupération lien (Cookies/IP)');
+            console.error(`❌ Erreur yt-dlp: ${stderr || error.message}`);
+            // Si l'erreur mentionne "Sign in", c'est que les cookies sont invalides ou expirés
+            return res.status(500).send('Erreur Auth YouTube');
         }
 
         const directUrl = stdout.trim();
-        if (!directUrl) {
-            return res.status(500).send('Lien direct vide');
-        }
+        if (!directUrl) return res.status(500).send('Lien vide');
 
-        console.log(`✅ [2/2] Lien trouvé, lancement du stream CURL...`);
+        console.log(`✅ [2/2] Stream via CURL...`);
 
         res.header('Content-Type', 'audio/mp4');
         res.header('Access-Control-Allow-Origin', '*');
 
         const streamer = spawn(isWindows ? 'curl.exe' : 'curl', [
-            '-L',
-            '-s',
-            directUrl
+            '-L', '-s', directUrl
         ]);
 
         streamer.stdout.pipe(res);
-        streamer.stderr.on('data', (data) => console.error(`⚠️ Erreur Curl: ${data}`));
+        streamer.stderr.on('data', (d) => console.error(`⚠️ Curl: ${d}`));
         res.on('close', () => streamer.kill());
     });
 });
 
-app.listen(PORT, () => console.log(`🚀 Serveur Robust-Curl prêt sur le port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Serveur Audio prêt sur le port ${PORT}`));
