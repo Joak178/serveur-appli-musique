@@ -124,6 +124,7 @@ app.get('/stream', async (req, res) => {
 
     console.log(`🎵 [1/2] Récupération du lien direct pour : ${videoId}`);
 
+    // Configuration avancée pour contourner les blocages BOT
     const args = [
         youtubeUrl,
         '--get-url',
@@ -131,7 +132,12 @@ app.get('/stream', async (req, res) => {
         '--no-playlist',
         '--no-warnings',
         '--force-ipv4',
-        '--cache-dir', '/tmp/.cache'
+        '--cache-dir', '/tmp/.cache',
+        // Masquage en navigateur standard
+        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        '--referer', 'https://www.youtube.com/',
+        // ASTUCE CLEF : On utilise l'API Android qui est moins restrictive sur les IPs serveur
+        '--extractor-args', 'youtube:player_client=android'
     ];
 
     if (fs.existsSync(cookiesPath)) args.push('--cookies', cookiesPath);
