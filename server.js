@@ -1,4 +1,4 @@
-const fetch = require('node-fetch');
+// SUPPRIMÉ : const fetch = require('node-fetch'); <-- Cette ligne causait l'erreur
 const express = require('express');
 const cors = require('cors');
 const ytSearch = require('yt-search');
@@ -11,6 +11,7 @@ app.use(cors());
 
 const PORT = process.env.PORT || 3000;
 
+// --- CONFIGURATION MOTEUR YT-DLP ---
 const isWindows = process.platform === 'win32';
 const binaryDir = isWindows ? __dirname : '/tmp';
 const fileName = isWindows ? 'yt-dlp.exe' : 'yt-dlp';
@@ -32,24 +33,34 @@ function setupCookies() {
 
 async function ensureYtDlp() {
     setupCookies();
-    if (fs.existsSync(ytDlpBinaryPath) && fs.statSync(ytDlpBinaryPath).size > 1000000) return;
+    if (fs.existsSync(ytDlpBinaryPath) && fs.statSync(ytDlpBinaryPath).size > 1000000) {
+        console.log("✅ Moteur yt-dlp présent.");
+        return;
+    }
     
     console.log("📥 Téléchargement de yt-dlp...");
+    
     try {
         const url = isWindows 
             ? 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'
             : 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
+        
+        // Utilisation du fetch natif de Node 18 (pas d'import requis)
         const response = await fetch(url);
-        const buffer = await response.buffer();
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        
+        const arrayBuffer = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        
         fs.writeFileSync(ytDlpBinaryPath, buffer);
         fs.chmodSync(ytDlpBinaryPath, 0o755);
+        
         console.log("✅ yt-dlp installé !");
     } catch (e) {
-        console.error("❌ Erreur installation yt-dlp:", e.message);
+        console.error("❌ Erreur téléchargement yt-dlp:", e.message);
     }
 }
 
-// --- ROUTE DE RECHERCHE ---
 app.get('/search', async (req, res) => {
     try {
         const query = req.query.q;
@@ -68,17 +79,14 @@ app.get('/search', async (req, res) => {
     }
 });
 
-// --- ROUTE DE STREAMING (LA CORRECTION) ---
 app.get('/stream', async (req, res) => {
     const videoUrl = req.query.url;
     if (!videoUrl) return res.status(400).send('URL manquante');
 
-    console.log(`🎵 Streaming demandé pour: ${videoUrl}`);
-
     const args = [
         videoUrl,
         '-f', 'bestaudio[ext=m4a]/bestaudio/best',
-        '-o', '-', // Envoyer vers stdout (le flux de sortie)
+        '-o', '-',
         '--no-playlist',
         '--quiet',
         '--force-ipv4',
@@ -89,12 +97,9 @@ app.get('/stream', async (req, res) => {
         args.push('--cookies', cookiesPath);
     }
 
-    // On définit le type de contenu pour le navigateur
     res.setHeader('Content-Type', 'audio/mpeg');
-
     const ytDlp = spawn(ytDlpBinaryPath, args);
 
-    // On lie la sortie de yt-dlp directement à la réponse Express
     ytDlp.stdout.pipe(res);
 
     ytDlp.stderr.on('data', (data) => {
@@ -102,11 +107,10 @@ app.get('/stream', async (req, res) => {
     });
 
     ytDlp.on('close', (code) => {
-        if (code !== 0) console.error(`yt-dlp processus terminé avec code ${code}`);
+        if (code !== 0) console.error(`yt-dlp terminé avec code ${code}`);
         res.end();
     });
 
-    // Si l'utilisateur ferme l'onglet ou change de musique, on tue le processus
     req.on('close', () => {
         ytDlp.kill();
     });
