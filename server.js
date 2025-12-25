@@ -18,13 +18,6 @@ const fileName = isWindows ? 'yt-dlp.exe' : 'yt-dlp';
 const ytDlpBinaryPath = path.join(binaryDir, fileName);
 const cookiesPath = path.join(binaryDir, 'cookies.txt');
 
-// --- PROXY PUBLIC DE SECOURS ---
-// IMPORTANT : Ces proxies sont temporaires et peuvent tomber rapidement
-const SOCKS5_PROXY = 'socks5://188.166.195.127:1080'; // Exemple de proxy public
-
-console.log(`🔧 Proxy de secours configuré : ${SOCKS5_PROXY ? 'Activé' : 'Désactivé'}`);
-
-// (Reste des fonctions setupCookies, ensureYtDlp, extractVideoId, app.get('/search') inchangées)
 function setupCookies() {
     let cookiesContent = process.env.YOUTUBE_COOKIES;
     if (cookiesContent) {
@@ -50,7 +43,8 @@ async function ensureYtDlp() {
     try {
         const url = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
         const response = await fetch(url);
-        const buffer = await response.buffer();
+        const arrayBuffer = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
         
         fs.writeFileSync(ytDlpBinaryPath, buffer);
         fs.chmodSync(ytDlpBinaryPath, 0o755);
@@ -61,15 +55,6 @@ async function ensureYtDlp() {
     }
 }
 
-// IMPORTANT : Appeler au démarrage
-(async () => {
-    await ensureYtDlp();
-    app.listen(PORT, () => console.log(`🚀 Serveur prêt sur le port ${PORT}`));
-})();
-
-// ensureYtDlp(); // Décommentez pour le test, mais pour Render il est exécuté par défaut
-
-// (Fonctionnalités de recherche)
 function extractVideoId(url) {
     if (!url) return null;
     const match = url.match(/(?:v=|\/)([0-9A-Za-z_-]{11})/);
@@ -94,71 +79,62 @@ app.get('/search', async (req, res) => {
     }
 });
 
-
-// --- ROUTE STREAMING DIRECT AVEC PROXY ---
-app.get('/stream', async (req, res) => {
+// --- ROUTE POUR OBTENIR L'URL AUDIO (Solution 3) ---
+app.get('/get-audio-url', async (req, res) => {
     const rawUrl = req.query.url;
     const videoId = extractVideoId(rawUrl);
     
-    if (!videoId) return res.status(400).send('ID introuvable');
+    if (!videoId) return res.status(400).json({ error: 'ID introuvable' });
     const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
     if (!fs.existsSync(ytDlpBinaryPath)) {
         await ensureYtDlp();
-        if (!fs.existsSync(ytDlpBinaryPath)) return res.status(503).send('Moteur absent');
+        if (!fs.existsSync(ytDlpBinaryPath)) {
+            return res.status(503).json({ error: 'Moteur absent' });
+        }
     }
 
-    console.log(`🎵 Stream demandé (Proxy) : ${videoId}`);
+    console.log(`🔍 Extraction URL audio pour : ${videoId}`);
 
     try {
-        res.header('Content-Type', 'audio/mp4');
-        res.header('Access-Control-Allow-Origin', '*');
-
         const args = [
             youtubeUrl,
             '-f', 'bestaudio[ext=m4a]/best',
-            '-o', '-',
+            '--get-url',
             '--no-playlist',
             '--quiet',
-            '--no-warnings',
-            '--no-check-certificate',
             '--force-ipv4',
-            '--cache-dir', '/tmp/.cache',
-            // On utilise le mode TV EMBEDDED car il est le plus permissif sur le type d'IP
-            '--extractor-args', 'youtube:player_client=tv_embedded' 
+            '--extractor-args', 'youtube:player_client=tv_embedded'
         ];
 
-        // AJOUT DES ARGUMENTS PROXY
-        if (SOCKS5_PROXY) {
-            args.push('--proxy', SOCKS5_PROXY);
-            console.log("-> Requête routée via SOCKS5 Proxy");
-        }
-
-        // Ajout des cookies (même si en mode TV, pour le contenu restreint)
         if (fs.existsSync(cookiesPath)) {
             args.push('--cookies', cookiesPath);
         }
 
-        const child = spawn(ytDlpBinaryPath, args);
+        const audioUrl = execSync(`"${ytDlpBinaryPath}" ${args.join(' ')}`, {
+            encoding: 'utf8',
+            timeout: 15000
+        }).trim();
 
-        child.stderr.on('data', (data) => {
-            const msg = data.toString();
-            // Si le blocage persiste
-            if (msg.includes('ERROR') || msg.includes('Sign in') || msg.includes('403')) {
-                console.error(`❌ Erreur yt-dlp: ${msg}`);
-                // On pourrait ajouter ici une logique pour changer de proxy si possible
-            }
+        if (!audioUrl || !audioUrl.startsWith('http')) {
+            throw new Error('URL invalide');
+        }
+
+        console.log(`✅ URL audio extraite avec succès`);
+        
+        res.json({ 
+            url: audioUrl,
+            mimeType: 'audio/mp4'
         });
 
-        child.stdout.pipe(res);
-        res.on('close', () => child.kill());
-
     } catch (err) {
-        console.error("❌ Erreur Node:", err.message);
-        if (!res.headersSent) res.status(500).send('Erreur serveur');
+        console.error("❌ Erreur extraction:", err.message);
+        res.status(500).json({ error: 'Impossible d\'extraire l\'URL audio' });
     }
 });
 
-app.listen(PORT, () => console.log(`🚀 Serveur Proxy-Stream prêt sur le port ${PORT}`));
-
-
+// IMPORTANT : Un seul app.listen à la fin
+(async () => {
+    await ensureYtDlp();
+    app.listen(PORT, () => console.log(`🚀 Serveur prêt sur le port ${PORT}`));
+})();
