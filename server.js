@@ -2,7 +2,7 @@ const fetch = require('node-fetch');
 const express = require('express');
 const cors = require('cors');
 const ytSearch = require('yt-search');
-const { spawn, execSync } = require('child_process');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -11,7 +11,6 @@ app.use(cors());
 
 const PORT = process.env.PORT || 3000;
 
-// --- CONFIGURATION MOTEUR YT-DLP ---
 const isWindows = process.platform === 'win32';
 const binaryDir = isWindows ? __dirname : '/tmp';
 const fileName = isWindows ? 'yt-dlp.exe' : 'yt-dlp';
@@ -33,34 +32,24 @@ function setupCookies() {
 
 async function ensureYtDlp() {
     setupCookies();
-    if (fs.existsSync(ytDlpBinaryPath) && fs.statSync(ytDlpBinaryPath).size > 1000000) {
-        console.log("✅ Moteur yt-dlp présent.");
-        return;
-    }
+    if (fs.existsSync(ytDlpBinaryPath) && fs.statSync(ytDlpBinaryPath).size > 1000000) return;
     
     console.log("📥 Téléchargement de yt-dlp...");
-    
     try {
-        const url = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
+        const url = isWindows 
+            ? 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'
+            : 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
         const response = await fetch(url);
-        const arrayBuffer = await response.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
-        
+        const buffer = await response.buffer();
         fs.writeFileSync(ytDlpBinaryPath, buffer);
         fs.chmodSync(ytDlpBinaryPath, 0o755);
-        
         console.log("✅ yt-dlp installé !");
     } catch (e) {
-        console.error("❌ Erreur téléchargement yt-dlp:", e.message);
+        console.error("❌ Erreur installation yt-dlp:", e.message);
     }
 }
 
-function extractVideoId(url) {
-    if (!url) return null;
-    const match = url.match(/(?:v=|\/)([0-9A-Za-z_-]{11})/);
-    return match ? match[1] : null;
-}
-
+// --- ROUTE DE RECHERCHE ---
 app.get('/search', async (req, res) => {
     try {
         const query = req.query.q;
@@ -79,61 +68,50 @@ app.get('/search', async (req, res) => {
     }
 });
 
-// --- ROUTE POUR OBTENIR L'URL AUDIO (Solution 3) ---
-app.get('/get-audio-url', async (req, res) => {
-    const rawUrl = req.query.url;
-    const videoId = extractVideoId(rawUrl);
-    
-    if (!videoId) return res.status(400).json({ error: 'ID introuvable' });
-    const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
+// --- ROUTE DE STREAMING (LA CORRECTION) ---
+app.get('/stream', async (req, res) => {
+    const videoUrl = req.query.url;
+    if (!videoUrl) return res.status(400).send('URL manquante');
 
-    if (!fs.existsSync(ytDlpBinaryPath)) {
-        await ensureYtDlp();
-        if (!fs.existsSync(ytDlpBinaryPath)) {
-            return res.status(503).json({ error: 'Moteur absent' });
-        }
+    console.log(`🎵 Streaming demandé pour: ${videoUrl}`);
+
+    const args = [
+        videoUrl,
+        '-f', 'bestaudio[ext=m4a]/bestaudio/best',
+        '-o', '-', // Envoyer vers stdout (le flux de sortie)
+        '--no-playlist',
+        '--quiet',
+        '--force-ipv4',
+        '--extractor-args', 'youtube:player_client=tv_embedded'
+    ];
+
+    if (fs.existsSync(cookiesPath)) {
+        args.push('--cookies', cookiesPath);
     }
 
-    console.log(`🔍 Extraction URL audio pour : ${videoId}`);
+    // On définit le type de contenu pour le navigateur
+    res.setHeader('Content-Type', 'audio/mpeg');
 
-    try {
-        const args = [
-            youtubeUrl,
-            '-f', 'bestaudio[ext=m4a]/best',
-            '--get-url',
-            '--no-playlist',
-            '--quiet',
-            '--force-ipv4',
-            '--extractor-args', 'youtube:player_client=tv_embedded'
-        ];
+    const ytDlp = spawn(ytDlpBinaryPath, args);
 
-        if (fs.existsSync(cookiesPath)) {
-            args.push('--cookies', cookiesPath);
-        }
+    // On lie la sortie de yt-dlp directement à la réponse Express
+    ytDlp.stdout.pipe(res);
 
-        const audioUrl = execSync(`"${ytDlpBinaryPath}" ${args.join(' ')}`, {
-            encoding: 'utf8',
-            timeout: 15000
-        }).trim();
+    ytDlp.stderr.on('data', (data) => {
+        console.error(`yt-dlp stderr: ${data}`);
+    });
 
-        if (!audioUrl || !audioUrl.startsWith('http')) {
-            throw new Error('URL invalide');
-        }
+    ytDlp.on('close', (code) => {
+        if (code !== 0) console.error(`yt-dlp processus terminé avec code ${code}`);
+        res.end();
+    });
 
-        console.log(`✅ URL audio extraite avec succès`);
-        
-        res.json({ 
-            url: audioUrl,
-            mimeType: 'audio/mp4'
-        });
-
-    } catch (err) {
-        console.error("❌ Erreur extraction:", err.message);
-        res.status(500).json({ error: 'Impossible d\'extraire l\'URL audio' });
-    }
+    // Si l'utilisateur ferme l'onglet ou change de musique, on tue le processus
+    req.on('close', () => {
+        ytDlp.kill();
+    });
 });
 
-// IMPORTANT : Un seul app.listen à la fin
 (async () => {
     await ensureYtDlp();
     app.listen(PORT, () => console.log(`🚀 Serveur prêt sur le port ${PORT}`));
