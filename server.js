@@ -1,3 +1,4 @@
+const fetch = require('node-fetch');
 const express = require('express');
 const cors = require('cors');
 const ytSearch = require('yt-search');
@@ -159,4 +160,5 @@ app.get('/stream', async (req, res) => {
 });
 
 app.listen(PORT, () => console.log(`🚀 Serveur Proxy-Stream prêt sur le port ${PORT}`));
+
 
