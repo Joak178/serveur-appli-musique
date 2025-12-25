@@ -37,7 +37,6 @@ function setupCookies() {
     }
 }
 
-// Installation robuste (méthode spawn) - Conservée
 async function ensureYtDlp() {
     setupCookies();
     if (fs.existsSync(ytDlpBinaryPath) && fs.statSync(ytDlpBinaryPath).size > 1000000) {
@@ -45,9 +44,28 @@ async function ensureYtDlp() {
         return;
     }
     
-    // (Logiciel de téléchargement de yt-dlp ici)
-    // ... [Téléchargement et chmod du binaire] ...
+    console.log("📥 Téléchargement de yt-dlp...");
+    
+    try {
+        const url = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
+        const response = await fetch(url);
+        const buffer = await response.buffer();
+        
+        fs.writeFileSync(ytDlpBinaryPath, buffer);
+        fs.chmodSync(ytDlpBinaryPath, 0o755);
+        
+        console.log("✅ yt-dlp installé !");
+    } catch (e) {
+        console.error("❌ Erreur téléchargement yt-dlp:", e.message);
+    }
 }
+
+// IMPORTANT : Appeler au démarrage
+(async () => {
+    await ensureYtDlp();
+    app.listen(PORT, () => console.log(`🚀 Serveur prêt sur le port ${PORT}`));
+})();
+
 // ensureYtDlp(); // Décommentez pour le test, mais pour Render il est exécuté par défaut
 
 // (Fonctionnalités de recherche)
@@ -141,3 +159,4 @@ app.get('/stream', async (req, res) => {
 });
 
 app.listen(PORT, () => console.log(`🚀 Serveur Proxy-Stream prêt sur le port ${PORT}`));
+
