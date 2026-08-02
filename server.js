@@ -61,21 +61,31 @@ async function ensureYtDlp() {
     }
 }
 
+// 1. ROUTE DE RECHERCHE YOUTUBE
 app.get('/search', async (req, res) => {
+    const query = req.query.q;
+    if (!query) return res.status(400).json({ error: 'Recherche vide' });
+
     try {
-        const query = req.query.q;
-        if (!query) return res.status(400).json({ error: 'Recherche vide' });
-        const result = await ytSearch(query);
-        const videos = result.videos.slice(0, 10).map(item => ({
-            title: item.title,
-            thumbnail: item.thumbnail,
-            url: item.url,
-            duration: item.timestamp,
-            author: item.author.name
+        // Recherche les 10 premiers résultats avec yt-dlp
+        const output = await ytDlp(`ytsearch10:${query}`, {
+            dumpSingleJson: true,
+            noWarnings: true,
+            defaultSearch: 'ytsearch'
+        });
+
+        const results = output.entries.map(video => ({
+            title: video.title,
+            url: video.webpage_url,
+            thumbnail: video.thumbnail,
+            author: video.uploader,
+            duration: video.duration_string
         }));
-        res.json(videos);
+
+        res.json(results);
     } catch (err) {
-        res.status(500).json({ error: 'Erreur serveur' });
+        console.error("Erreur Recherche:", err);
+        res.status(500).json({ error: "Erreur lors de la recherche" });
     }
 });
 
