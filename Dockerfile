@@ -20,9 +20,9 @@ RUN npm install
 # Copie du reste du code du serveur
 COPY . .
 
-# Hugging Face utilise par défaut le port 7860
-ENV PORT=7860
-EXPOSE 7860
+# Koyeb injectera automatiquement la variable PORT
+ENV PORT=8080
+EXPOSE 8080
 
 # Lancement du serveur
 CMD ["node", "server.js"]
