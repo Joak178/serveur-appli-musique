@@ -1,86 +1,59 @@
 const express = require('express');
 const cors = require('cors');
-const ytSearch = require('yt-search');
-const axios = require('axios'); // Uniquement axios pour les requêtes API
+const { exec } = require('child_process');
+const ytDlp = require('yt-dlp-exec');
 
 const app = express();
-app.use(cors());
+app.use(cors()); // Nécessaire pour éviter les blocages CORS sur Three.js
+
+// 1. ROUTE DE RECHERCHE YOUTUBE
+app.get('/search', async (req, res) => {
+    const query = req.query.q;
+    if (!query) return res.status(400).json({ error: 'Recherche vide' });
+
+    try {
+        // Recherche les 10 premiers résultats avec yt-dlp
+        const output = await ytDlp(`ytsearch10:${query}`, {
+            dumpSingleJson: true,
+            noWarnings: true,
+            defaultSearch: 'ytsearch'
+        });
+
+        const results = output.entries.map(video => ({
+            title: video.title,
+            url: video.webpage_url,
+            thumbnail: video.thumbnail,
+            author: video.uploader,
+            duration: video.duration_string
+        }));
+
+        res.json(results);
+    } catch (err) {
+        console.error("Erreur Recherche:", err);
+        res.status(500).json({ error: "Erreur lors de la recherche" });
+    }
+});
+
+// 2. ROUTE DE STREAMING AUDIO DIRECT (Pour le visualiseur 3D)
+app.get('/stream', async (req, res) => {
+    const videoUrl = req.query.url;
+    if (!videoUrl) return res.status(400).send('URL manquante');
+
+    try {
+        // Extraction de l'URL directe du flux audio (Opus / AAC) sans re-télécharger la vidéo
+        const audioFormatUrl = await ytDlp(videoUrl, {
+            format: 'bestaudio[ext=m4a]/bestaudio/best',
+            getUrl: true
+        });
+
+        // Redirection vers le flux audio officiel de Google/YouTube
+        // C'est cette URL que la balise <audio> de ton HTML va lire
+        res.redirect(audioFormatUrl.trim());
+    } catch (err) {
+        console.error("Erreur Stream:", err);
+        res.status(500).send("Impossible de récupérer l'audio");
+    }
+});
 
 const PORT = process.env.PORT || 3000;
-
-// --- API EXTERNE DE RÉCUPÉRATION D'URL ---
-// Cette URL est un service tiers fiable qui gère le décryptage des liens YouTube
-const YOUTUBE_EXTRACTOR_API = 'https://ytapi.microlink.io/'; 
-
-// --- FONCTIONS UTILITAIRES ---
-function extractVideoId(url) {
-    if (!url) return null;
-    const match = url.match(/(?:v=|\/)([0-9A-Za-z_-]{11})/);
-    return match ? match[1] : null;
-}
-
-app.get('/search', async (req, res) => {
-    try {
-        const query = req.query.q;
-        if (!query) return res.status(400).json({ error: 'Recherche vide' });
-        const result = await ytSearch(query);
-        const videos = result.videos.slice(0, 10).map(item => ({
-            title: item.title,
-            thumbnail: item.thumbnail,
-            url: item.url,
-            duration: item.timestamp,
-            author: item.author.name
-        }));
-        res.json(videos);
-    } catch (err) {
-        res.status(500).json({ error: 'Erreur serveur' });
-    }
-});
-
-// --- NOUVELLE ROUTE : RÉCUPÉRER L'URL DIRECTE DU FLUX (Pas de streaming via Render) ---
-app.get('/get-audio-url', async (req, res) => {
-    const rawUrl = req.query.url;
-    const videoId = extractVideoId(rawUrl);
-    
-    if (!videoId) return res.status(400).send('ID introuvable');
-    const youtubeUrl = `https://www.youtube.com/watch?v=${videoId}`;
-
-    console.log(`🎵 [API Externe] Demande de lien direct pour : ${videoId}`);
-
-    try {
-        // 1. Appel à l'API externe pour obtenir le lien direct
-        const response = await axios.get(YOUTUBE_EXTRACTOR_API, {
-            params: {
-                url: youtubeUrl,
-                embed: 'media',
-                filter: 'audio' // On demande spécifiquement l'audio
-            },
-            // Simulation de navigateur pour éviter les blocages de l'API externe
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36' }
-        });
-
-        const data = response.data;
-        
-        // 2. Extraction du lien audio
-        let audioLink = data.metadata?.audio?.url;
-        
-        if (!audioLink) {
-            console.error("❌ Lien audio non trouvé dans la réponse API.");
-            return res.status(500).json({ error: 'Lien audio non disponible via API.' });
-        }
-        
-        console.log(`✅ Succès ! URL CDN renvoyée : ${audioLink.substring(0, 50)}...`);
-
-        // 3. Renvoi de l'URL au Frontend
-        res.json({
-            url: audioLink,
-            mimeType: 'audio/mp4' // On suppose que le format est compatible
-        });
-
-    } catch (err) {
-        console.error("❌ Erreur API Externe:", err.message);
-        res.status(500).json({ error: 'Erreur communication API externe. Le service est peut-être saturé.' });
-    }
-});
-
-app.listen(PORT, () => console.log(`🚀 Serveur API Externe prêt sur le port ${PORT}`));
+app.listen(PORT, () => console.log(`Serveur démarré sur le port ${PORT}`));
