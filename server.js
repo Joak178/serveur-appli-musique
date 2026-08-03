@@ -91,13 +91,13 @@ app.get('/stream', async (req, res) => {
 
     const args = [
         videoUrl,
-        '-f', 'ba/b', // "bestaudio or best" - évite l'erreur "Requested format is not available"
+        '-f', 'ba/b',
         '-o', '-',
         '--no-playlist',
         '--quiet',
         '--force-ipv4',
-        '--js-runtimes', 'node',
-        '--extractor-args', 'youtube:player_client=web,mweb,ios' // Clients compatibles cookies
+        '--js-runtimes', 'node', // Utilise le binaire Node.js du conteneur
+        '--extractor-args', 'youtube:player_client=web,mweb,ios'
     ];
 
     if (fs.existsSync(cookiesPath)) {
