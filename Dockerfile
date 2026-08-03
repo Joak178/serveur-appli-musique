@@ -4,13 +4,14 @@ FROM node:${NODE_VERSION}-slim AS base
 
 LABEL fly_launch_runtime="Node.js"
 
-# Installation de python3, ffmpeg, ca-certificates ET nodejs dans l'image système
+# Installation de python3, ffmpeg, ca-certificates, curl et quickjs (JS runtime pour yt-dlp)
 RUN apt-get update -qq && \
     apt-get install --no-install-recommends -y \
     python3 \
     ca-certificates \
     ffmpeg \
-    nodejs \
+    curl \
+    quickjs \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
