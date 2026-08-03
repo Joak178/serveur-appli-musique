@@ -7,12 +7,12 @@ app.use(cors());
 
 const PORT = process.env.PORT || 3000;
 
-// Liste d'instances Invidious publiques fiables (avec fallback si une est en panne)
-const INVIDIOUS_INSTANCES = [
-    'https://invidious.nerdvpn.de',
-    'https://inv.tux.pizza',
-    'https://invidious.drgns.space',
-    'https://vid.puffyan.us'
+// Liste d'instances PIPED publiques très fiables
+const PIPED_INSTANCES = [
+    'https://pipedapi.kavin.rocks',
+    'https://api.piped.privacydev.net',
+    'https://piped-api.garudalinux.org',
+    'https://pipedapi.rs200.xyz'
 ];
 
 // 1. ROUTE DE RECHERCHE YOUTUBE
@@ -39,7 +39,7 @@ app.get('/search', async (req, res) => {
     }
 });
 
-// 2. ROUTE STREAM AUDIO (VIA INVIDIOUS)
+// 2. ROUTE STREAM AUDIO (VIA PIPED API)
 app.get('/stream', async (req, res) => {
     const videoUrl = req.query.url;
     if (!videoUrl) return res.status(400).send('URL manquante');
@@ -50,26 +50,26 @@ app.get('/stream', async (req, res) => {
 
     if (!videoId) return res.status(400).send('ID vidéo invalide');
 
-    // Essaye les instances Invidious les unes après les autres
-    for (const instance of INVIDIOUS_INSTANCES) {
+    // Teste les instances Piped les unes après les autres
+    for (const instance of PIPED_INSTANCES) {
         try {
-            const response = await fetch(`${instance}/api/v1/videos/${videoId}`);
+            const response = await fetch(`${instance}/streams/${videoId}`, {
+                headers: { 'User-Agent': 'Mozilla/5.0' }
+            });
             if (!response.ok) continue;
 
             const data = await response.json();
-            if (!data.adaptiveFormats) continue;
+            if (!data.audioStreams || data.audioStreams.length === 0) continue;
 
-            // Cherche le meilleur flux audio uniquement
-            const audioStream = data.adaptiveFormats
-                .filter(f => f.type && f.type.includes('audio/'))
-                .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+            // Filtre et trie pour obtenir la meilleure qualité audio
+            const audioStream = data.audioStreams.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
 
             if (audioStream && audioStream.url) {
-                console.log(`✅ Flux extrait depuis ${instance} pour ${videoId}`);
+                console.log(`✅ Flux extrait via Piped (${instance}) pour ${videoId}`);
                 return res.redirect(audioStream.url);
             }
         } catch (e) {
-            console.warn(`⚠️ Échec instance ${instance}:`, e.message);
+            console.warn(`⚠️ Échec instance Piped ${instance}:`, e.message);
         }
     }
 
@@ -78,5 +78,5 @@ app.get('/stream', async (req, res) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Serveur léger Invidious en écoute sur le port ${PORT}`);
+    console.log(`Serveur léger Piped en écoute sur le port ${PORT}`);
 });
