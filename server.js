@@ -1,75 +1,78 @@
 const express = require('express');
 const cors = require('cors');
-const ytSearch = require('yt-search');
+const { Client } = require('soundcloud-scraper');
 
 const app = express();
 app.use(cors());
 
 const PORT = process.env.PORT || 3000;
 
-// 1. ROUTE DE RECHERCHE YOUTUBE
+// Initialisation du client SoundCloud
+const sc = new Client();
+
+// 1. ROUTE DE RECHERCHE SOUNDCLOUD
 app.get('/search', async (req, res) => {
     const query = req.query.q;
     if (!query) return res.status(400).json({ error: 'Recherche vide' });
 
     try {
-        const r = await ytSearch(query);
-        const videos = r.videos.slice(0, 10);
+        console.log(`🔎 Recherche SoundCloud pour : "${query}"`);
+        const results = await sc.search(query, 'track');
 
-        const results = videos.map(video => ({
-            title: video.title,
-            url: video.url,
-            thumbnail: video.thumbnail,
-            author: video.author.name,
-            duration: video.timestamp
+        // On prend les 10 premiers résultats
+        const tracks = results.slice(0, 10).map(track => ({
+            title: track.title,
+            url: track.url,
+            thumbnail: track.thumbnail || 'https://soundcloud.com/favicon.ico',
+            author: track.author ? track.author.name : 'Artiste inconnu',
+            duration: formatDuration(track.duration)
         }));
 
-        res.json(results);
+        res.json(tracks);
     } catch (err) {
-        console.error("Erreur Recherche:", err);
-        res.status(500).json({ error: "Erreur lors de la recherche" });
+        console.error("❌ Erreur Recherche SoundCloud:", err.message);
+        res.status(500).json({ error: "Erreur lors de la recherche SoundCloud" });
     }
 });
 
-// 2. ROUTE STREAM AUDIO (VIA COBALT API)
+// 2. ROUTE STREAM AUDIO SOUNDCLOUD
 app.get('/stream', async (req, res) => {
-    const videoUrl = req.query.url;
-    if (!videoUrl) return res.status(400).send('URL manquante');
+    const trackUrl = req.query.url;
+    if (!trackUrl) return res.status(400).send('URL manquante');
 
     try {
-        // Appels à l'API Cobalt
-        const response = await fetch('https://api.cobalt.tools/api/json', {
-            method: 'POST',
-            headers: {
-                'Accept': 'application/json',
-                'Content-Type': 'application/json',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-            },
-            body: JSON.stringify({
-                url: videoUrl,
-                isAudioOnly: true,
-                aFormat: 'mp3'
-            })
+        console.log(`🎵 Extraction du flux pour : ${trackUrl}`);
+        
+        // Récupère les infos du morceau
+        const song = await sc.getSongInfo(trackUrl);
+        
+        // Télécharge/récupère le flux audio sous forme de stream Node.js
+        const stream = await song.downloadProgressive();
+
+        res.setHeader('Content-Type', 'audio/mpeg');
+        
+        // Transmet le flux directement au navigateur (pipe)
+        stream.pipe(res);
+
+        req.on('close', () => {
+            if (stream.destroy) stream.destroy();
         });
 
-        const data = await response.json();
-
-        if (data.url) {
-            console.log(`✅ Flux Cobalt extrait avec succès pour ${videoUrl}`);
-            return res.redirect(data.url);
-        } else if (data.picker) {
-            // Si Cobalt renvoie une liste d'options
-            const audioItem = data.picker.find(item => item.type === 'audio') || data.picker[0];
-            return res.redirect(audioItem.url);
-        } else {
-            throw new Error(data.text || "Impossible d'extraire l'audio");
-        }
     } catch (err) {
-        console.error("❌ Erreur Cobalt Stream:", err.message);
-        res.status(500).send("Erreur lors de la récupération du flux audio");
+        console.error("❌ Erreur Stream SoundCloud:", err.message);
+        res.status(500).send("Impossible de récupérer le flux audio");
     }
 });
 
+// Helper pour formater la durée en mm:ss
+function formatDuration(ms) {
+    if (!ms) return "3:00";
+    const totalSeconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+}
+
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Serveur Cobalt en écoute sur le port ${PORT}`);
+    console.log(`🚀 Serveur SoundCloud en écoute sur le port ${PORT}`);
 });
