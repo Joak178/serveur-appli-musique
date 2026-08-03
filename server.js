@@ -1,4 +1,3 @@
-// SUPPRIMÉ : const fetch = require('node-fetch'); <-- Cette ligne causait l'erreur
 const express = require('express');
 const cors = require('cors');
 const ytSearch = require('yt-search');
@@ -9,7 +8,8 @@ const path = require('path');
 const app = express();
 app.use(cors());
 
-const PORT = process.env.PORT || 7860;
+// Alignement du port sur 3000
+const PORT = process.env.PORT || 3000;
 
 // --- CONFIGURATION MOTEUR YT-DLP ---
 const isWindows = process.platform === 'win32';
@@ -45,7 +45,6 @@ async function ensureYtDlp() {
             ? 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'
             : 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
         
-        // Utilisation du fetch natif de Node 18 (pas d'import requis)
         const response = await fetch(url);
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         
@@ -61,25 +60,21 @@ async function ensureYtDlp() {
     }
 }
 
-// 1. ROUTE DE RECHERCHE YOUTUBE
+// 1. ROUTE DE RECHERCHE YOUTUBE (Correction via yt-search)
 app.get('/search', async (req, res) => {
     const query = req.query.q;
     if (!query) return res.status(400).json({ error: 'Recherche vide' });
 
     try {
-        // Recherche les 10 premiers résultats avec yt-dlp
-        const output = await ytDlp(`ytsearch10:${query}`, {
-            dumpSingleJson: true,
-            noWarnings: true,
-            defaultSearch: 'ytsearch'
-        });
+        const r = await ytSearch(query);
+        const videos = r.videos.slice(0, 10); // Récupère les 10 premiers résultats
 
-        const results = output.entries.map(video => ({
+        const results = videos.map(video => ({
             title: video.title,
-            url: video.webpage_url,
+            url: video.url,
             thumbnail: video.thumbnail,
-            author: video.uploader,
-            duration: video.duration_string
+            author: video.author.name,
+            duration: video.timestamp
         }));
 
         res.json(results);
@@ -89,6 +84,7 @@ app.get('/search', async (req, res) => {
     }
 });
 
+// 2. ROUTE STREAM AUDIO
 app.get('/stream', async (req, res) => {
     const videoUrl = req.query.url;
     if (!videoUrl) return res.status(400).send('URL manquante');
@@ -129,6 +125,6 @@ app.get('/stream', async (req, res) => {
 (async () => {
     await ensureYtDlp();
     app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Serveur en écoute sur le port ${PORT}`);
-});
+        console.log(`Serveur en écoute sur le port ${PORT}`);
+    });
 })();
