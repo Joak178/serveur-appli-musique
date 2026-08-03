@@ -91,13 +91,13 @@ app.get('/stream', async (req, res) => {
 
     const args = [
         videoUrl,
-        '-f', 'ba/b',
+        '-f', 'ba*/b', // Sélectionne n'importe quel flux audio disponible sans être trop restrictif
         '-o', '-',
         '--no-playlist',
         '--quiet',
         '--force-ipv4',
-        '--js-runtimes', 'node', // Utilise le binaire Node.js du conteneur
-        '--extractor-args', 'youtube:player_client=web,mweb,ios'
+        // On utilise les clients TV et VR qui contournent le PO Token
+        '--extractor-args', 'youtube:player_client=tv,android_vr' 
     ];
 
     if (fs.existsSync(cookiesPath)) {
