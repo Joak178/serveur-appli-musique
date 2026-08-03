@@ -91,13 +91,13 @@ app.get('/stream', async (req, res) => {
 
     const args = [
         videoUrl,
-        '-f', 'bestaudio[ext=m4a]/bestaudio/best',
+        '-f', 'ba/b', // "bestaudio or best" - évite l'erreur "Requested format is not available"
         '-o', '-',
         '--no-playlist',
         '--quiet',
         '--force-ipv4',
-        '--js-runtimes', 'node', // Indique à yt-dlp d'utiliser Node pour les scripts JS
-        '--extractor-args', 'youtube:player_client=android,web' // Clients stables
+        '--js-runtimes', 'node',
+        '--extractor-args', 'youtube:player_client=web,mweb,ios' // Clients compatibles cookies
     ];
 
     if (fs.existsSync(cookiesPath)) {
