@@ -1,28 +1,39 @@
-# Image de base Node.js
-FROM node:20-slim
+# Adjust NODE_VERSION as desired
+ARG NODE_VERSION=20.18.0
+FROM node:${NODE_VERSION}-slim AS base
 
-# Installation de Python 3, FFmpeg et curl (requis pour yt-dlp)
-RUN apt-get update && apt-get install -y \
+LABEL fly_launch_runtime="Node.js"
+
+# Installation de python3, ffmpeg, ca-certificates, curl et quickjs (JS runtime pour yt-dlp)
+RUN apt-get update -qq && \
+    apt-get install --no-install-recommends -y \
     python3 \
+    ca-certificates \
     ffmpeg \
     curl \
+    quickjs \
     && rm -rf /var/lib/apt/lists/*
 
-# Dossier de travail
 WORKDIR /app
 
-# Copie des fichiers de dépendances Node
-COPY package*.json ./
+ENV NODE_ENV="production"
 
-# Installation des paquets npm
-RUN npm install
+# Étape d'installation des dépendances npm
+FROM base AS build
 
-# Copie du reste du code du serveur
+RUN apt-get update -qq && \
+    apt-get install --no-install-recommends -y build-essential node-gyp pkg-config
+
+COPY package-lock.json package.json ./
+RUN npm ci
+
 COPY . .
 
-# Koyeb injectera automatiquement la variable PORT
-ENV PORT=8080
-EXPOSE 8080
+# Étape finale
+FROM base
 
-# Lancement du serveur
-CMD ["node", "server.js"]
+COPY --from=build /app /app
+
+EXPOSE 3000
+
+CMD [ "node", "server.js" ]
