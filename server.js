@@ -7,14 +7,6 @@ app.use(cors());
 
 const PORT = process.env.PORT || 3000;
 
-// Liste d'instances PIPED publiques très fiables
-const PIPED_INSTANCES = [
-    'https://pipedapi.kavin.rocks',
-    'https://api.piped.privacydev.net',
-    'https://piped-api.garudalinux.org',
-    'https://pipedapi.rs200.xyz'
-];
-
 // 1. ROUTE DE RECHERCHE YOUTUBE
 app.get('/search', async (req, res) => {
     const query = req.query.q;
@@ -39,58 +31,45 @@ app.get('/search', async (req, res) => {
     }
 });
 
-// 2. ROUTE STREAM AUDIO (VIA PIPED API)
+// 2. ROUTE STREAM AUDIO (VIA COBALT API)
 app.get('/stream', async (req, res) => {
     const videoUrl = req.query.url;
     if (!videoUrl) return res.status(400).send('URL manquante');
 
-    const match = videoUrl.match(/(?:v=|\/|embed\/|shorts\/)([\w-]{11})/);
-    const videoId = match ? match[1] : null;
+    try {
+        // Appels à l'API Cobalt
+        const response = await fetch('https://api.cobalt.tools/api/json', {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+            },
+            body: JSON.stringify({
+                url: videoUrl,
+                isAudioOnly: true,
+                aFormat: 'mp3'
+            })
+        });
 
-    if (!videoId) return res.status(400).send('ID vidéo invalide');
+        const data = await response.json();
 
-    const PIPED_INSTANCES = [
-        'https://pipedapi.kavin.rocks',
-        'https://api.piped.privacydev.net',
-        'https://piped-api.garudalinux.org'
-    ];
-
-    for (const instance of PIPED_INSTANCES) {
-        try {
-            const apiRes = await fetch(`${instance}/streams/${videoId}`, {
-                headers: { 'User-Agent': 'Mozilla/5.0' }
-            });
-            if (!apiRes.ok) continue;
-
-            const data = await apiRes.json();
-            if (!data.audioStreams || data.audioStreams.length === 0) continue;
-
-            const audioStreamInfo = data.audioStreams.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
-
-            // Téléchargement du flux et relais direct vers la réponse HTTP
-            const audioFetch = await fetch(audioStreamInfo.url, {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0',
-                    'Referer': 'https://youtube.com'
-                }
-            });
-
-            if (!audioFetch.ok) continue;
-
-            res.setHeader('Content-Type', audioStreamInfo.mimeType || 'audio/mpeg');
-            
-            // Relais du flux vidéo/audio vers le navigateur
-            const arrayBuffer = await audioFetch.arrayBuffer();
-            return res.send(Buffer.from(arrayBuffer));
-
-        } catch (e) {
-            console.warn(`⚠️ Échec instance ${instance}:`, e.message);
+        if (data.url) {
+            console.log(`✅ Flux Cobalt extrait avec succès pour ${videoUrl}`);
+            return res.redirect(data.url);
+        } else if (data.picker) {
+            // Si Cobalt renvoie une liste d'options
+            const audioItem = data.picker.find(item => item.type === 'audio') || data.picker[0];
+            return res.redirect(audioItem.url);
+        } else {
+            throw new Error(data.text || "Impossible d'extraire l'audio");
         }
+    } catch (err) {
+        console.error("❌ Erreur Cobalt Stream:", err.message);
+        res.status(500).send("Erreur lors de la récupération du flux audio");
     }
-
-    res.status(500).send("Flux audio indisponible");
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Serveur léger Piped en écoute sur le port ${PORT}`);
+    console.log(`Serveur Cobalt en écoute sur le port ${PORT}`);
 });
