@@ -96,7 +96,8 @@ app.get('/stream', async (req, res) => {
         '--no-playlist',
         '--quiet',
         '--force-ipv4',
-        '--extractor-args', 'youtube:player_client=tv_embedded'
+        '--js-runtimes', 'node', // Indique à yt-dlp d'utiliser Node pour les scripts JS
+        '--extractor-args', 'youtube:player_client=android,web' // Clients stables
     ];
 
     if (fs.existsSync(cookiesPath)) {
