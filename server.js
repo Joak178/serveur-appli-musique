@@ -44,34 +44,52 @@ app.get('/stream', async (req, res) => {
     const videoUrl = req.query.url;
     if (!videoUrl) return res.status(400).send('URL manquante');
 
-    // Extraction de l'ID vidéo (11 caractères)
     const match = videoUrl.match(/(?:v=|\/|embed\/|shorts\/)([\w-]{11})/);
     const videoId = match ? match[1] : null;
 
     if (!videoId) return res.status(400).send('ID vidéo invalide');
 
-    // Teste les instances Piped les unes après les autres
+    const PIPED_INSTANCES = [
+        'https://pipedapi.kavin.rocks',
+        'https://api.piped.privacydev.net',
+        'https://piped-api.garudalinux.org'
+    ];
+
     for (const instance of PIPED_INSTANCES) {
         try {
-            const response = await fetch(`${instance}/streams/${videoId}`, {
+            const apiRes = await fetch(`${instance}/streams/${videoId}`, {
                 headers: { 'User-Agent': 'Mozilla/5.0' }
             });
-            if (!response.ok) continue;
+            if (!apiRes.ok) continue;
 
-            const data = await response.json();
+            const data = await apiRes.json();
             if (!data.audioStreams || data.audioStreams.length === 0) continue;
 
-            // Filtre et trie pour obtenir la meilleure qualité audio
-            const audioStream = data.audioStreams.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+            const audioStreamInfo = data.audioStreams.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
 
-            if (audioStream && audioStream.url) {
-                console.log(`✅ Flux extrait via Piped (${instance}) pour ${videoId}`);
-                return res.redirect(audioStream.url);
-            }
+            // Téléchargement du flux et relais direct vers la réponse HTTP
+            const audioFetch = await fetch(audioStreamInfo.url, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0',
+                    'Referer': 'https://youtube.com'
+                }
+            });
+
+            if (!audioFetch.ok) continue;
+
+            res.setHeader('Content-Type', audioStreamInfo.mimeType || 'audio/mpeg');
+            
+            // Relais du flux vidéo/audio vers le navigateur
+            const arrayBuffer = await audioFetch.arrayBuffer();
+            return res.send(Buffer.from(arrayBuffer));
+
         } catch (e) {
-            console.warn(`⚠️ Échec instance Piped ${instance}:`, e.message);
+            console.warn(`⚠️ Échec instance ${instance}:`, e.message);
         }
     }
+
+    res.status(500).send("Flux audio indisponible");
+});
 
     console.error(`❌ Impossible de récupérer l'audio pour ${videoId}`);
     res.status(500).send("Flux audio indisponible");
