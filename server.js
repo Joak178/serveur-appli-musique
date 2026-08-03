@@ -91,10 +91,6 @@ app.get('/stream', async (req, res) => {
     res.status(500).send("Flux audio indisponible");
 });
 
-    console.error(`❌ Impossible de récupérer l'audio pour ${videoId}`);
-    res.status(500).send("Flux audio indisponible");
-});
-
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Serveur léger Piped en écoute sur le port ${PORT}`);
 });
