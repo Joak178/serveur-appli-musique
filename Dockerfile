@@ -4,19 +4,20 @@ FROM node:${NODE_VERSION}-slim AS base
 
 LABEL fly_launch_runtime="Node.js"
 
-# Installation des paquets requis pour yt-dlp dans l'image finale
+# Installation de python3, ffmpeg, ca-certificates ET nodejs dans l'image système
 RUN apt-get update -qq && \
     apt-get install --no-install-recommends -y \
     python3 \
     ca-certificates \
     ffmpeg \
+    nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 ENV NODE_ENV="production"
 
-# Étape d'installation des dépendances
+# Étape d'installation des dépendances npm
 FROM base AS build
 
 RUN apt-get update -qq && \
