@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 3000;
 // Initialisation du client SoundCloud
 const sc = new Client();
 
-// 1. ROUTE DE RECHERCHE SOUNDCLOUD
+// 1. ROUTE DE RECHERCHE SOUNDCLOUD (Correction des noms de propriétés)
 app.get('/search', async (req, res) => {
     const query = req.query.q;
     if (!query) return res.status(400).json({ error: 'Recherche vide' });
@@ -19,48 +19,39 @@ app.get('/search', async (req, res) => {
         console.log(`🔎 Recherche SoundCloud pour : "${query}"`);
         const results = await sc.search(query, 'track');
 
-        // On prend les 10 premiers résultats
-        const tracks = results.slice(0, 10).map(track => ({
-            title: track.title,
-            url: track.url,
-            thumbnail: track.thumbnail || 'https://soundcloud.com/favicon.ico',
-            author: track.author ? track.author.name : 'Artiste inconnu',
-            duration: formatDuration(track.duration)
-        }));
+        const tracks = results.slice(0, 10).map(track => {
+            // Extraction du titre (title ou name)
+            const title = track.title || track.name || 'Titre inconnu';
+
+            // Extraction de l'artiste (author.name, user.username, ou string)
+            let author = 'Artiste inconnu';
+            if (track.author && typeof track.author === 'object') {
+                author = track.author.name || track.author.username || author;
+            } else if (track.user && typeof track.user === 'object') {
+                author = track.user.username || track.user.name || author;
+            } else if (typeof track.author === 'string') {
+                author = track.author;
+            }
+
+            // Extraction de l'image / miniature
+            const thumbnail = track.thumbnail || track.artwork_url || (track.user ? track.user.avatar_url : null) || 'https://soundcloud.com/favicon.ico';
+
+            // Extraction de la durée
+            const duration = formatDuration(track.duration);
+
+            return {
+                title,
+                url: track.url,
+                thumbnail,
+                author,
+                duration
+            };
+        });
 
         res.json(tracks);
     } catch (err) {
         console.error("❌ Erreur Recherche SoundCloud:", err.message);
         res.status(500).json({ error: "Erreur lors de la recherche SoundCloud" });
-    }
-});
-
-// 2. ROUTE STREAM AUDIO SOUNDCLOUD
-app.get('/stream', async (req, res) => {
-    const trackUrl = req.query.url;
-    if (!trackUrl) return res.status(400).send('URL manquante');
-
-    try {
-        console.log(`🎵 Extraction du flux pour : ${trackUrl}`);
-        
-        // Récupère les infos du morceau
-        const song = await sc.getSongInfo(trackUrl);
-        
-        // Télécharge/récupère le flux audio sous forme de stream Node.js
-        const stream = await song.downloadProgressive();
-
-        res.setHeader('Content-Type', 'audio/mpeg');
-        
-        // Transmet le flux directement au navigateur (pipe)
-        stream.pipe(res);
-
-        req.on('close', () => {
-            if (stream.destroy) stream.destroy();
-        });
-
-    } catch (err) {
-        console.error("❌ Erreur Stream SoundCloud:", err.message);
-        res.status(500).send("Impossible de récupérer le flux audio");
     }
 });
 
